@@ -1,6 +1,5 @@
-
 import React, { useRef, useEffect } from 'react';
-import { ConversationEntry } from '../types';
+import { ConversationEntry, PhraseAnalysis } from '../types';
 import PilotIcon from './icons/PilotIcon';
 import TowerIcon from './icons/TowerIcon';
 import CheckCircleIcon from './icons/CheckCircleIcon';
@@ -11,13 +10,37 @@ interface ConversationLogProps {
   interimTranscription: string;
 }
 
+const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score }) => {
+  if (typeof score !== 'number') {
+    return null;
+  }
+
+  const roundedScore = Math.round(score * 100);
+  const title = `Transcription Confidence: ${roundedScore}%`;
+
+  let colorClass = 'bg-red-500';
+  if (score >= 0.85) {
+    colorClass = 'bg-green-500';
+  } else if (score >= 0.6) {
+    colorClass = 'bg-yellow-400';
+  }
+
+  return (
+    <div
+      className={`w-3 h-3 rounded-full ml-2 flex-shrink-0`}
+      title={title}
+      aria-label={title}
+    >
+      <div className={`w-full h-full rounded-full ${colorClass}`}></div>
+    </div>
+  );
+};
+
 const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription }) => {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const endOfLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    endOfLogRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [log, interimTranscription]);
 
   const getIcon = (speaker: 'ATC' | 'PILOT') => {
@@ -42,6 +65,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
       feedbackSummary,
       detailedFeedback,
       correctPhraseology,
+      phraseAnalysis,
       commonPitfalls,
       furtherReading,
     } = entry.feedback;
@@ -54,9 +78,38 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
     const FeedbackSection: React.FC<{ title: string; children: React.ReactNode; mono?: boolean }> = ({ title, children, mono = false }) => (
       <div className="mt-3">
         <h5 className="text-sm font-bold text-gray-400 uppercase tracking-wider">{title}</h5>
-        <p className={`text-gray-300 whitespace-pre-wrap ${mono ? 'font-mono bg-gray-900/50 p-2 rounded-md mt-1' : ''}`}>{children}</p>
+        <div className={`text-gray-300 whitespace-pre-wrap ${mono ? 'font-mono bg-gray-900/50 p-2 rounded-md mt-1' : 'mt-1'}`}>{children}</div>
       </div>
     );
+    
+    const PhraseAnalysisBlock: React.FC<{ analysis: PhraseAnalysis[] }> = ({ analysis }) => {
+      const getStatusColor = (status: PhraseAnalysis['status']) => {
+        switch (status) {
+          case 'correct':
+            return 'border-green-500/50 bg-green-500/10 text-green-300';
+          case 'acceptable_variation':
+            return 'border-yellow-500/50 bg-yellow-500/10 text-yellow-300';
+          case 'incorrect':
+            return 'border-red-500/50 bg-red-500/10 text-red-300';
+          default:
+            return 'border-gray-600/50 bg-gray-600/10 text-gray-300';
+        }
+      };
+
+      return (
+        <div className="flex flex-wrap gap-x-2 gap-y-1">
+          {analysis.map((item, index) => (
+            <span
+              key={index}
+              className={`font-mono px-2 py-1 rounded-md border text-sm ${getStatusColor(item.status)}`}
+              title={item.explanation || item.status}
+            >
+              {item.phrase}
+            </span>
+          ))}
+        </div>
+      );
+    };
 
     return (
       <div className={`mt-3 p-3 rounded-lg border bg-gray-800/50 ${borderColor}`}>
@@ -71,13 +124,32 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
             <p className="text-gray-200">{feedbackSummary}</p>
           </div>
         </div>
-        {!isCorrect && (
-          <div className="ml-7 mt-2 border-l border-gray-600 pl-4">
-            {detailedFeedback && <FeedbackSection title="Details">{detailedFeedback}</FeedbackSection>}
-            {correctPhraseology && <FeedbackSection title="Correct Phraseology" mono>{correctPhraseology}</FeedbackSection>}
-            {commonPitfalls && <FeedbackSection title="Common Pitfalls">{commonPitfalls}</FeedbackSection>}
-            {furtherReading && <FeedbackSection title="Further Reading">{furtherReading}</FeedbackSection>}
-          </div>
+        
+        {(phraseAnalysis || !isCorrect || (entry.alternatives && entry.alternatives.length > 0)) && (
+             <div className="ml-7 mt-2 border-l border-gray-600 pl-4">
+                 {phraseAnalysis && phraseAnalysis.length > 0 && (
+                     <FeedbackSection title="Phrase-by-Phrase Analysis">
+                         <PhraseAnalysisBlock analysis={phraseAnalysis} />
+                     </FeedbackSection>
+                 )}
+                 {entry.alternatives && entry.alternatives.length > 0 && (
+                    <FeedbackSection title="Alternative Phraseology">
+                        <ul className="space-y-2">
+                            {entry.alternatives.map((alt, i) => (
+                                <li key={i} className="font-mono bg-gray-900/50 p-2 rounded-md">{alt}</li>
+                            ))}
+                        </ul>
+                    </FeedbackSection>
+                 )}
+                {!isCorrect && (
+                    <>
+                        {detailedFeedback && <FeedbackSection title="Details">{detailedFeedback}</FeedbackSection>}
+                        {correctPhraseology && <FeedbackSection title="Correct Phraseology" mono>{correctPhraseology}</FeedbackSection>}
+                        {commonPitfalls && <FeedbackSection title="Common Pitfalls">{commonPitfalls}</FeedbackSection>}
+                        {furtherReading && <FeedbackSection title="Further Reading">{furtherReading}</FeedbackSection>}
+                    </>
+                )}
+            </div>
         )}
       </div>
     );
@@ -85,13 +157,16 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
 
 
   return (
-    <div ref={scrollRef} className="flex-grow w-full bg-gray-900/70 p-4 rounded-lg overflow-y-auto border border-gray-700 shadow-inner h-64 md:h-auto">
+    <div className="flex-grow w-full bg-gray-900/70 p-4 rounded-lg overflow-y-auto border border-gray-700 shadow-inner h-64 md:h-auto">
       <div className="space-y-4">
         {log.map((entry, index) => (
           <div key={index} className="flex items-start space-x-3">
             {getIcon(entry.speaker)}
             <div className="flex-1">
-              {getLabel(entry.speaker)}
+              <div className="flex items-center">
+                {getLabel(entry.speaker)}
+                {entry.speaker === 'ATC' && <ConfidenceIndicator score={entry.confidence} />}
+              </div>
               <p className="text-gray-200 text-lg leading-relaxed">{entry.text}</p>
               {entry.speaker === 'PILOT' && <FeedbackBlock entry={entry} />}
             </div>
@@ -106,6 +181,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
             </div>
           </div>
         )}
+        <div ref={endOfLogRef} />
       </div>
     </div>
   );

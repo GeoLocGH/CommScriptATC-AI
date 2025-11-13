@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
+import { LanguageCode, SUPPORTED_LANGUAGES } from '../types';
 
 interface SettingsModalProps {
   currentCallsign: string;
-  onSave: (newCallsign: string) => void;
+  currentLanguage: LanguageCode;
+  onSave: (newCallsign: string, newLanguage: LanguageCode) => void;
   onClose: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, onSave, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, onSave, onClose }) => {
   const [callsign, setCallsign] = useState(currentCallsign);
+  const [language, setLanguage] = useState<LanguageCode>(currentLanguage);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (callsign.trim()) {
-      onSave(callsign.trim());
+      onSave(callsign.trim(), language);
     }
   };
 
@@ -39,6 +42,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, onSave, 
               required
             />
              <p className="text-xs text-gray-500 mt-2">Use phonetic alphabet for best results (e.g., "Alpha", not "A").</p>
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="language" className="block text-sm font-medium text-gray-300 mb-2">
+              Transcription Language
+            </label>
+            <select
+              id="language"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as LanguageCode)}
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              {Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => (
+                <option key={code} value={code}>{name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-2">Select the language for ATC communications.</p>
           </div>
 
           <div className="flex justify-end space-x-4">

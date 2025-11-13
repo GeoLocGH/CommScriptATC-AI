@@ -1,10 +1,12 @@
 
-import React from 'react';
 
-const ApiKeyPrompt: React.FC<{ onSelectKey: () => void }> = ({ onSelectKey }) => (
+import React from 'react';
+import SpinnerIcon from './icons/SpinnerIcon';
+
+const ApiKeyPrompt: React.FC<{ onSelectKey: () => void, isVerifying?: boolean }> = ({ onSelectKey, isVerifying = false }) => (
     <div className="w-full max-w-3xl mx-auto flex flex-col items-center justify-center text-center p-8 bg-gray-800/50 rounded-lg border border-gray-700 shadow-lg">
         <header className="text-center mb-6">
-          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">Pilot's ATC Co-pilot</h1>
+          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">CommScript ATC</h1>
           <p className="text-gray-400 mt-2">AI-Powered Radio Communication Assistant</p>
         </header>
         <div className="w-full bg-gray-800 p-6 rounded-lg border border-yellow-500/50">
@@ -23,9 +25,17 @@ const ApiKeyPrompt: React.FC<{ onSelectKey: () => void }> = ({ onSelectKey }) =>
             </p>
             <button
                 onClick={onSelectKey}
-                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-colors"
+                disabled={isVerifying}
+                className="inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-colors disabled:bg-blue-800 disabled:cursor-not-allowed"
             >
-                Select API Key
+                {isVerifying ? (
+                    <>
+                        <SpinnerIcon className="w-5 h-5 mr-3" />
+                        Verifying...
+                    </>
+                ) : (
+                    'Select API Key'
+                )}
             </button>
         </div>
         <footer className="text-center text-gray-600 text-sm mt-8">
