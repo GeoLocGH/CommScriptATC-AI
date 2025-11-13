@@ -1,0 +1,7 @@
+{
+  "name": "CommScriptATC",
+  "description": "An AI-powered Air Traffic Control (ATC) radio communication assistant for pilots. It transcribes ATC instructions and generates accurate pilot read-back confirmations, providing a valuable training and in-flight support tool.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
