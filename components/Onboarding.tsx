@@ -15,7 +15,7 @@ interface OnboardingProps {
 const steps = [
   {
     icon: <TowerIcon className="w-12 h-12 text-cyan-400" />,
-    title: 'Welcome to ATC Co-pilot!',
+    title: 'Welcome to CommScript ATC!',
     description: "This short tutorial will guide you through the main features. Let's get you ready for the virtual skies.",
   },
   {

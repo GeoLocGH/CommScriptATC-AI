@@ -1,14 +1,17 @@
 import React, { useRef, useEffect } from 'react';
-import { ConversationEntry, PhraseAnalysis } from '../types';
+import { ConversationEntry, PhraseAnalysis, AppStatus } from '../types';
 import PilotIcon from './icons/PilotIcon';
 import TowerIcon from './icons/TowerIcon';
 import CheckCircleIcon from './icons/CheckCircleIcon';
 import WarningIcon from './icons/WarningIcon';
 import UserIcon from './icons/UserIcon';
+import SpinnerIcon from './icons/SpinnerIcon';
 
 interface ConversationLogProps {
   log: ConversationEntry[];
   interimTranscription: string;
+  status: AppStatus;
+  thinkingMessage: string | null;
 }
 
 const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score }) => {
@@ -37,12 +40,12 @@ const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score })
   );
 };
 
-const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription }) => {
+const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription, status, thinkingMessage }) => {
   const endOfLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endOfLogRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [log, interimTranscription]);
+  }, [log, interimTranscription, status, thinkingMessage]);
 
   const getIcon = (speaker: 'ATC' | 'PILOT' | 'TRAINEE') => {
     switch(speaker) {
@@ -160,7 +163,8 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
       </div>
     );
   };
-
+  
+  const isThinking = status === AppStatus.THINKING || status === AppStatus.CHECKING_ACCURACY;
 
   return (
     <div className="flex-grow w-full bg-gray-900/70 p-4 rounded-lg overflow-y-auto border border-gray-700 shadow-inner h-64 md:h-auto">
@@ -184,6 +188,19 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
             <div className="flex-1">
               {getLabel('ATC')}
               <p className="text-gray-400 text-lg leading-relaxed">{interimTranscription}</p>
+            </div>
+          </div>
+        )}
+        {isThinking && thinkingMessage && (
+          <div className="flex items-start space-x-3">
+            <div className="w-6 h-6 flex-shrink-0 pt-1">
+              <SpinnerIcon className="w-5 h-5 text-cyan-400" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center">
+                <span className="font-bold text-gray-400">AI PROCESSING</span>
+              </div>
+              <p className="text-gray-300 text-lg leading-relaxed italic">{thinkingMessage}...</p>
             </div>
           </div>
         )}

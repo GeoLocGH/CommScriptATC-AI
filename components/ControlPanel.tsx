@@ -22,11 +22,12 @@ interface ControlPanelProps {
   recordedAudioUrl: string | null;
   callsign: string;
   errorMessage?: string | null;
+  thinkingMessage: string | null;
 }
 
 const SQUELCH_THRESHOLD = 0.01; // Below this RMS volume, show squelch effect
 
-const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage }) => {
+const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage, thinkingMessage }) => {
   const isListening = status === AppStatus.LISTENING;
 
   const getStatusText = () => {
@@ -42,7 +43,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onT
           return 'Select a training scenario above';
         case AppStatus.THINKING:
         case AppStatus.CHECKING_ACCURACY:
-           return 'Analyzing your read-back...';
+           return thinkingMessage ? `${thinkingMessage}...` : 'Analyzing your read-back...';
         case AppStatus.ERROR:
           return errorMessage || 'An error occurred. Please try again.';
       }
@@ -52,9 +53,9 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onT
       case AppStatus.LISTENING:
         return 'Listening for ATC...';
       case AppStatus.THINKING:
-        return 'Generating Read-back...';
+        return thinkingMessage ? `${thinkingMessage}...` : 'Generating Read-back...';
       case AppStatus.CHECKING_ACCURACY:
-        return 'Checking Accuracy...';
+        return thinkingMessage ? `${thinkingMessage}...` : 'Checking Accuracy...';
       case AppStatus.SPEAKING:
         return 'Speaking Read-back...';
       case AppStatus.ERROR:
@@ -114,7 +115,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onT
           disabled={isRegenerateDisabled || isTrainingMode}
           className="flex items-center gap-2 px-4 py-2 bg-gray-700/80 rounded-lg text-gray-300 text-sm transition-colors duration-200 enabled:hover:bg-gray-600/80 enabled:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="Regenerate read-back for last ATC instruction"
-          title={isTrainingMode ? "Regeneration disabled in training mode" : "Regenerate read-back for last ATC instruction"}
+          title={isTrainingMode ? "Regeneration disabled in training mode" : "Regenerate read-back for last ATC instruction (Cmd/Ctrl + R)"}
         >
           <RedoIcon className="w-4 h-4" />
           <span>Regenerate</span>
@@ -125,7 +126,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, isTrainingMode, onT
                 onClick={onClearTranscription}
                 className="flex items-center gap-2 px-4 py-2 bg-yellow-700/80 rounded-lg text-yellow-100 text-sm transition-colors duration-200 hover:bg-yellow-600/80 hover:text-white"
                 aria-label="Clear current transcription"
-                title="Clear current transcription"
+                title="Clear current transcription (Cmd/Ctrl + Backspace)"
             >
                 <BackspaceIcon className="w-4 h-4" />
                 <span>Clear Input</span>

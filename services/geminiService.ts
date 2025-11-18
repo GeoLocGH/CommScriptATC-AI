@@ -1,5 +1,4 @@
 
-// Fix: Remove LiveSession from import as it is not an exported member.
 import { GoogleGenAI, Modality, Type, LiveServerMessage } from "@google/genai";
 import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, ConversationEntry, TrainingScenario } from "../types";
 
