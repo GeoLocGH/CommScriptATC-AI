@@ -17,8 +17,8 @@ export const getSavedSessions = (): Session[] => {
   return [];
 };
 
-export const saveInProgressSession = (log: ConversationEntry[], isTrainingMode: boolean): void => {
-  if (isTrainingMode || log.length === 0) {
+export const saveInProgressSession = (log: ConversationEntry[]): void => {
+  if (log.length === 0) {
     clearInProgressSession();
     return;
   }
@@ -48,8 +48,8 @@ export const clearInProgressSession = (): void => {
   }
 };
 
-export const saveSession = (log: ConversationEntry[], isTrainingMode: boolean): Session[] => {
-  if (log.length === 0 || isTrainingMode) return getSavedSessions();
+export const saveSession = (log: ConversationEntry[]): Session[] => {
+  if (log.length === 0) return getSavedSessions();
 
   const newSession: Session = {
     id: Date.now(),

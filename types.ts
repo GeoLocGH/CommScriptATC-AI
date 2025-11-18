@@ -1,12 +1,10 @@
 
-
 export enum AppStatus {
   IDLE = 'IDLE',
   LISTENING = 'LISTENING',
   THINKING = 'THINKING',
   CHECKING_ACCURACY = 'CHECKING_ACCURACY',
   SPEAKING = 'SPEAKING',
-  AWAITING_USER_RESPONSE = 'AWAITING_USER_RESPONSE', // Waiting for user to start their read-back in training
   ERROR = 'ERROR',
 }
 
@@ -27,7 +25,7 @@ export interface ReadbackFeedback {
 }
 
 export interface ConversationEntry {
-  speaker: 'ATC' | 'PILOT' | 'TRAINEE';
+  speaker: 'ATC' | 'PILOT';
   text: string;
   feedback?: ReadbackFeedback;
   confidence?: number;
@@ -57,11 +55,3 @@ export const AVAILABLE_VOICES = {
 } as const;
 
 export type VoiceName = keyof typeof AVAILABLE_VOICES;
-
-export interface TrainingScenario {
-  key: string;
-  name: string;
-  atcInstruction: string;
-  expectedReadback: string;
-  isCustom?: boolean;
-}

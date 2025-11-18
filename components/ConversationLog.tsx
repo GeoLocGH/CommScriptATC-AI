@@ -1,17 +1,13 @@
 import React, { useRef, useEffect } from 'react';
-import { ConversationEntry, PhraseAnalysis, AppStatus } from '../types';
+import { ConversationEntry, PhraseAnalysis } from '../types';
 import PilotIcon from './icons/PilotIcon';
 import TowerIcon from './icons/TowerIcon';
 import CheckCircleIcon from './icons/CheckCircleIcon';
 import WarningIcon from './icons/WarningIcon';
-import UserIcon from './icons/UserIcon';
-import SpinnerIcon from './icons/SpinnerIcon';
 
 interface ConversationLogProps {
   log: ConversationEntry[];
   interimTranscription: string;
-  status: AppStatus;
-  thinkingMessage: string | null;
 }
 
 const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score }) => {
@@ -40,44 +36,41 @@ const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score })
   );
 };
 
-const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription, status, thinkingMessage }) => {
+const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription }) => {
   const endOfLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endOfLogRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [log, interimTranscription, status, thinkingMessage]);
+  }, [log, interimTranscription]);
 
-  const getIcon = (speaker: 'ATC' | 'PILOT' | 'TRAINEE') => {
-    switch(speaker) {
-        case 'ATC':
-            return <TowerIcon className="w-6 h-6 text-cyan-400 flex-shrink-0" />;
-        case 'PILOT':
-            return <PilotIcon className="w-6 h-6 text-green-400 flex-shrink-0" />;
-        case 'TRAINEE':
-            return <UserIcon className="w-6 h-6 text-yellow-400 flex-shrink-0" />;
+  const getIcon = (speaker: 'ATC' | 'PILOT') => {
+    if (speaker === 'ATC') {
+      return <TowerIcon className="w-6 h-6 text-cyan-400 flex-shrink-0" />;
     }
+    return <PilotIcon className="w-6 h-6 text-green-400 flex-shrink-0" />;
   };
 
-  const getLabel = (speaker: 'ATC' | 'PILOT' | 'TRAINEE') => {
-    switch(speaker) {
-        case 'ATC':
-            return <span className="font-bold text-cyan-400">ATC</span>;
-        case 'PILOT':
-            return <span className="font-bold text-green-400">PILOT (Correct Read-back)</span>;
-        case 'TRAINEE':
-            return <span className="font-bold text-yellow-400">YOUR ATTEMPT</span>;
+  const getLabel = (speaker: 'ATC' | 'PILOT') => {
+    if (speaker === 'ATC') {
+      return <span className="font-bold text-cyan-400">ATC</span>;
     }
+    return <span className="font-bold text-green-400">PILOT</span>;
   };
   
   const FeedbackBlock: React.FC<{ entry: ConversationEntry }> = ({ entry }) => {
-    if (!entry.feedback && (!entry.alternatives || entry.alternatives.length === 0)) return null;
+    if (!entry.feedback) return null;
 
     const {
-      feedback,
-      alternatives
-    } = entry;
+      accuracy,
+      feedbackSummary,
+      detailedFeedback,
+      correctPhraseology,
+      phraseAnalysis,
+      commonPitfalls,
+      furtherReading,
+    } = entry.feedback;
 
-    const isCorrect = feedback?.accuracy === 'CORRECT';
+    const isCorrect = accuracy === 'CORRECT';
     const borderColor = isCorrect ? 'border-green-500/50' : 'border-yellow-500/50';
     const iconColor = isCorrect ? 'text-green-400' : 'text-yellow-400';
     const titleColor = isCorrect ? 'text-green-300' : 'text-yellow-300';
@@ -119,43 +112,41 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
     };
 
     return (
-      <div className={`mt-3 p-3 rounded-lg border bg-gray-800/50 ${feedback ? borderColor : 'border-gray-600/50'}`}>
-        {feedback && (
-             <div className="flex items-start space-x-2">
-                {isCorrect ? (
-                    <CheckCircleIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
-                ) : (
-                    <WarningIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
-                )}
-                <div>
-                    <h4 className={`font-semibold ${titleColor}`}>Accuracy Check</h4>
-                    <p className="text-gray-200">{feedback.feedbackSummary}</p>
-                </div>
-            </div>
-        )}
+      <div className={`mt-3 p-3 rounded-lg border bg-gray-800/50 ${borderColor}`}>
+        <div className="flex items-start space-x-2">
+          {isCorrect ? (
+            <CheckCircleIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
+          ) : (
+            <WarningIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
+          )}
+          <div>
+            <h4 className={`font-semibold ${titleColor}`}>Accuracy Check</h4>
+            <p className="text-gray-200">{feedbackSummary}</p>
+          </div>
+        </div>
         
-        {(feedback?.phraseAnalysis || !isCorrect || (alternatives && alternatives.length > 0)) && (
+        {(phraseAnalysis || !isCorrect || (entry.alternatives && entry.alternatives.length > 0)) && (
              <div className="ml-7 mt-2 border-l border-gray-600 pl-4">
-                 {feedback?.phraseAnalysis && feedback.phraseAnalysis.length > 0 && (
+                 {phraseAnalysis && phraseAnalysis.length > 0 && (
                      <FeedbackSection title="Phrase-by-Phrase Analysis">
-                         <PhraseAnalysisBlock analysis={feedback.phraseAnalysis} />
+                         <PhraseAnalysisBlock analysis={phraseAnalysis} />
                      </FeedbackSection>
                  )}
-                 {alternatives && alternatives.length > 0 && (
+                 {entry.alternatives && entry.alternatives.length > 0 && (
                     <FeedbackSection title="Alternative Phraseology">
                         <ul className="space-y-2">
-                            {alternatives.map((alt, i) => (
+                            {entry.alternatives.map((alt, i) => (
                                 <li key={i} className="font-mono bg-gray-900/50 p-2 rounded-md">{alt}</li>
                             ))}
                         </ul>
                     </FeedbackSection>
                  )}
-                {feedback && !isCorrect && (
+                {!isCorrect && (
                     <>
-                        {feedback.detailedFeedback && <FeedbackSection title="Details">{feedback.detailedFeedback}</FeedbackSection>}
-                        {feedback.correctPhraseology && <FeedbackSection title="Correct Phraseology" mono>{feedback.correctPhraseology}</FeedbackSection>}
-                        {feedback.commonPitfalls && <FeedbackSection title="Common Pitfalls">{feedback.commonPitfalls}</FeedbackSection>}
-                        {feedback.furtherReading && <FeedbackSection title="Further Reading">{feedback.furtherReading}</FeedbackSection>}
+                        {detailedFeedback && <FeedbackSection title="Details">{detailedFeedback}</FeedbackSection>}
+                        {correctPhraseology && <FeedbackSection title="Correct Phraseology" mono>{correctPhraseology}</FeedbackSection>}
+                        {commonPitfalls && <FeedbackSection title="Common Pitfalls">{commonPitfalls}</FeedbackSection>}
+                        {furtherReading && <FeedbackSection title="Further Reading">{furtherReading}</FeedbackSection>}
                     </>
                 )}
             </div>
@@ -163,8 +154,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
       </div>
     );
   };
-  
-  const isThinking = status === AppStatus.THINKING || status === AppStatus.CHECKING_ACCURACY;
+
 
   return (
     <div className="flex-grow w-full bg-gray-900/70 p-4 rounded-lg overflow-y-auto border border-gray-700 shadow-inner h-64 md:h-auto">
@@ -178,7 +168,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
                 {entry.speaker === 'ATC' && <ConfidenceIndicator score={entry.confidence} />}
               </div>
               <p className="text-gray-200 text-lg leading-relaxed">{entry.text}</p>
-              {(entry.speaker === 'PILOT' || entry.speaker === 'TRAINEE') && <FeedbackBlock entry={entry} />}
+              {entry.speaker === 'PILOT' && <FeedbackBlock entry={entry} />}
             </div>
           </div>
         ))}
@@ -188,19 +178,6 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
             <div className="flex-1">
               {getLabel('ATC')}
               <p className="text-gray-400 text-lg leading-relaxed">{interimTranscription}</p>
-            </div>
-          </div>
-        )}
-        {isThinking && thinkingMessage && (
-          <div className="flex items-start space-x-3">
-            <div className="w-6 h-6 flex-shrink-0 pt-1">
-              <SpinnerIcon className="w-5 h-5 text-cyan-400" />
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center">
-                <span className="font-bold text-gray-400">AI PROCESSING</span>
-              </div>
-              <p className="text-gray-300 text-lg leading-relaxed italic">{thinkingMessage}...</p>
             </div>
           </div>
         )}
