@@ -307,7 +307,7 @@ export const connectToLive = (
         },
         config: {
             responseModalities: [Modality.AUDIO],
-            inputAudioTranscription: { languageCodes: [language] },
+            inputAudioTranscription: {},
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
             },
