@@ -1,6 +1,7 @@
+
 // Fix: Remove LiveSession from import as it is not an exported member.
 import { GoogleGenAI, Modality, Type, LiveServerMessage } from "@google/genai";
-import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, ConversationEntry } from "../types";
+import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, ConversationEntry, TrainingScenario } from "../types";
 
 // --- Audio Decoding/Encoding Helpers ---
 
@@ -51,6 +52,32 @@ const formatHistoryForPrompt = (history: ConversationEntry[]): string => {
         .map(entry => `${entry.speaker}: ${entry.text}`)
         .join('\n');
 };
+
+const readbackFeedbackSchema = {
+    type: Type.OBJECT,
+    properties: {
+        accuracy: { type: Type.STRING, enum: ['CORRECT', 'INCORRECT'] },
+        feedbackSummary: { type: Type.STRING, description: 'A one-sentence summary of the feedback.' },
+        detailedFeedback: { type: Type.STRING, description: 'A detailed explanation of any errors.' },
+        correctPhraseology: { type: Type.STRING, description: 'The 100% correct version of the read-back.' },
+        phraseAnalysis: {
+            type: Type.ARRAY,
+            description: "A breakdown of the pilot's read-back.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    phrase: { type: Type.STRING, description: "A segment of the pilot's read-back." },
+                    status: { type: Type.STRING, enum: ['correct', 'acceptable_variation', 'incorrect'] },
+                    explanation: { type: Type.STRING, description: "A brief explanation for 'incorrect' or 'acceptable_variation' statuses." }
+                },
+                required: ['phrase', 'status']
+            }
+        },
+        commonPitfalls: { type: Type.STRING, description: 'Common reasons pilots make this kind of error.' },
+        furtherReading: { type: Type.STRING, description: 'A suggestion for further study, e.g., "AIM 4-2-3".' }
+    },
+    required: ['accuracy', 'feedbackSummary', 'phraseAnalysis'],
+  };
 
 // --- Gemini API Service ---
 
@@ -205,39 +232,13 @@ export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadbac
   "${pilotReadback}"
   `;
   
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-        accuracy: { type: Type.STRING, enum: ['CORRECT', 'INCORRECT'] },
-        feedbackSummary: { type: Type.STRING, description: 'A one-sentence summary of the feedback.' },
-        detailedFeedback: { type: Type.STRING, description: 'A detailed explanation of any errors.' },
-        correctPhraseology: { type: Type.STRING, description: 'The 100% correct version of the read-back.' },
-        phraseAnalysis: {
-            type: Type.ARRAY,
-            description: "A breakdown of the pilot's read-back.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    phrase: { type: Type.STRING, description: "A segment of the pilot's read-back." },
-                    status: { type: Type.STRING, enum: ['correct', 'acceptable_variation', 'incorrect'] },
-                    explanation: { type: Type.STRING, description: "A brief explanation for 'incorrect' or 'acceptable_variation' statuses." }
-                },
-                required: ['phrase', 'status']
-            }
-        },
-        commonPitfalls: { type: Type.STRING, description: 'Common reasons pilots make this kind of error.' },
-        furtherReading: { type: Type.STRING, description: 'A suggestion for further study, e.g., "AIM 4-2-3".' }
-    },
-    required: ['accuracy', 'feedbackSummary', 'phraseAnalysis'],
-  };
-
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-pro',
       contents: prompt,
       config: {
         responseMimeType: "application/json",
-        responseSchema: responseSchema,
+        responseSchema: readbackFeedbackSchema,
         thinkingConfig: { thinkingBudget: 32768 }
       },
     });
@@ -254,6 +255,62 @@ export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadbac
   }
 };
 
+export const checkTrainingReadbackAccuracy = async (atcInstruction: string, pilotReadback: string, expectedReadback: string, language: LanguageCode, history: ConversationEntry[]): Promise<ReadbackFeedback> => {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const languageName = SUPPORTED_LANGUAGES[language];
+    const prompt = `You are an expert Certified Flight Instructor (CFI) specializing in radio communications. Your task is to provide a detailed comparison between a pilot's read-back and the "school solution" (the expected correct read-back) for a given Air Traffic Control (ATC) instruction. Both are in ${languageName}.
+
+    **Primary Goal:**
+    Determine if the pilot's read-back is operationally 'CORRECT' or 'INCORRECT' by comparing it to the expected read-back.
+
+    **Analysis Guidelines:**
+    1.  **Direct Comparison:** Your main task is to compare the "Pilot's Read-back" against the "Expected Correct Read-back".
+    2.  **Identify Deviations:** Note any differences in critical information (altitudes, headings, frequencies, clearances, runways) and phraseology.
+    3.  **Provide Specific Feedback:** When generating feedback, be very specific about the errors. Instead of saying "the altitude was wrong," say "You said 'five thousand,' but the expected read-back was 'climb and maintain five thousand.' The phrase 'climb and maintain' is critical for confirming the instruction."
+    4.  **Phrase-by-Phrase Analysis:** Break down the pilot's read-back into components. For each component, categorize its status ('correct', 'acceptable_variation', 'incorrect') by comparing it to the corresponding part of the expected read-back. Provide a clear explanation for any 'incorrect' status, referencing the expected phrase.
+
+    **Recent Communication History (for context):**
+    ${formatHistoryForPrompt(history)}
+
+    **Original ATC Instruction:**
+    "${atcInstruction}"
+
+    **Expected Correct Read-back (School Solution):**
+    "${expectedReadback}"
+
+    **Pilot's Read-back (User's Attempt):**
+    "${pilotReadback}"
+
+    **Output Requirements:**
+    - Provide a 'CORRECT' or 'INCORRECT' \`accuracy\` rating.
+    - Provide a concise \`feedbackSummary\` that directly compares the user's attempt to the expected read-back.
+    - If 'INCORRECT', provide actionable \`detailedFeedback\` explaining the specific errors by referencing the expected read-back.
+    - **ALWAYS** provide a \`phraseAnalysis\` array.
+    - The \`correctPhraseology\` field should contain the "Expected Correct Read-back" if the user's attempt was incorrect.
+    `;
+  
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: readbackFeedbackSchema,
+          thinkingConfig: { thinkingBudget: 32768 }
+        },
+      });
+      
+      const result = JSON.parse(response.text);
+      return result;
+    } catch (error) {
+      console.error("Error checking training readback accuracy:", error);
+      return {
+        accuracy: 'INCORRECT',
+        feedbackSummary: 'Could not verify read-back accuracy at this time.',
+        phraseAnalysis: [],
+      };
+    }
+  };
 
 export const generateSpeech = async (text: string, voiceName: VoiceName): Promise<AudioBuffer | null> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
@@ -284,6 +341,70 @@ export const generateSpeech = async (text: string, voiceName: VoiceName): Promis
     return null;
   }
 };
+
+export const generateCustomScenario = async (scenarioType: string, language: LanguageCode): Promise<Omit<TrainingScenario, 'key' | 'isCustom'>> => {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const languageName = SUPPORTED_LANGUAGES[language];
+    
+    const prompt = `
+      You are an expert aviation training scenario designer. Your task is to create a realistic and challenging training scenario for a pilot based on the requested type.
+
+      The scenario must include:
+      1. A short, descriptive \`name\`.
+      2. A complete \`atcInstruction\` from the Air Traffic Controller.
+      3. The most standard and correct \`expectedReadback\` from the pilot.
+
+      **IMPORTANT RULES:**
+      - Both the instruction and the read-back MUST use the placeholder \`{callsign}\` where the aircraft's callsign should be.
+      - The language of the output must be ${languageName}.
+      - The scenario should be diverse and not a simple variation of common examples.
+      - The name should be concise and in English, regardless of the target language.
+
+      **Requested Scenario Type:** ${scenarioType}
+
+      **Example Scenario Types & Guidance:**
+      - **IFR Clearance:** A full instrument flight rules clearance from clearance delivery, including route, altitude, frequency, and squawk.
+      - **VFR Clearance:** Instructions for a VFR departure through controlled airspace (e.g., Class C or B).
+      - **Traffic Pattern:** An instruction for a VFR aircraft entering the traffic pattern. This could include instructions to enter on a 45-degree downwind, report a specific position (e.g., midfield downwind), or sequence behind other traffic.
+      - **Non-Towered Airport Communications:** A scenario at an airport without a control tower (on CTAF). This should involve a pilot making a position report and self-announcing their intentions (e.g., "entering 45 for downwind runway 22").
+      - **Mountain Flying Procedures:** An advisory or instruction specific to mountain flying. This could involve warnings about turbulence, recommended routing through a mountain pass, or a reminder about high terrain.
+      - **Emergency "MAYDAY":** An ATC response to a pilot's 'MAYDAY' call (e.g., engine failure). The instruction should be what ATC tells the pilot to do *next*.
+      - **Critical MAYDAY:** A scenario for a severe, time-sensitive in-flight emergency that has been declared with "MAYDAY". This could involve an onboard fire, structural failure, or complete loss of controls. The ATC instruction must be direct, providing immediate vectors to the nearest suitable runway and any critical assistance information.
+      - **Approach & Diversion:** Instructions for an instrument approach, followed by a mid-approach change or diversion to an alternate airport due to weather or runway closure.
+      - **Mixed Instructions:** A single transmission containing multiple, unrelated instructions (e.g., heading change, altimeter setting, traffic advisory).
+    `;
+
+    const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+            name: { type: Type.STRING, description: "A short, descriptive name for the scenario in English." },
+            atcInstruction: { type: Type.STRING, description: "The full ATC instruction, including the {callsign} placeholder." },
+            expectedReadback: { type: Type.STRING, description: "The correct pilot read-back, including the {callsign} placeholder." },
+        },
+        required: ['name', 'atcInstruction', 'expectedReadback'],
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-pro',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+            },
+        });
+        const result = JSON.parse(response.text);
+        return result;
+    } catch (error) {
+        console.error("Error generating custom scenario:", error);
+        return {
+            name: "Generation Error",
+            atcInstruction: "Could not generate an instruction. Please try again.",
+            expectedReadback: "Error.",
+        };
+    }
+};
+
 
 // Fix: Remove explicit return type Promise<LiveSession> to allow for type inference.
 export const connectToLive = (

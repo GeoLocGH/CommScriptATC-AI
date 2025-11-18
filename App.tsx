@@ -1,10 +1,12 @@
+
 // Fix: Remove LiveSession from import as it is not an exported member.
 import { GoogleGenAI } from '@google/genai';
 // Fix: Correct React import statement.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { AppStatus, ConversationEntry, Session, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, AVAILABLE_VOICES } from './types';
-import { generateReadback, generateSpeech, connectToLive, checkReadbackAccuracy, extractCallsign } from './services/geminiService';
+import { AppStatus, ConversationEntry, Session, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, AVAILABLE_VOICES, TrainingScenario } from './types';
+import { generateReadback, generateSpeech, connectToLive, checkReadbackAccuracy, extractCallsign, generateCustomScenario, checkTrainingReadbackAccuracy } from './services/geminiService';
 import * as sessionService from './services/sessionService';
+import * as trainingScenarioService from './services/trainingScenarioService';
 import ControlPanel from './components/ControlPanel';
 import ConversationLog from './components/ConversationLog';
 import SessionHistory from './components/SessionHistory';
@@ -13,8 +15,12 @@ import Onboarding from './components/Onboarding';
 import InfoIcon from './components/icons/InfoIcon';
 import SettingsIcon from './components/icons/SettingsIcon';
 import SettingsModal from './components/SettingsModal';
+import TrainingModeBar from './components/TrainingModeBar';
+import { SCENARIOS } from './trainingScenarios';
+import CustomScenarioModal from './components/CustomScenarioModal';
 
 const ATC_INSTRUCTION_END_TIMEOUT = 2500; // ms of silence to detect end of instruction
+const NOISE_GATE_THRESHOLD = 0.01; // RMS volume below which audio is considered noise and is not sent.
 
 function encode(bytes: Uint8Array): string {
     let binary = '';
@@ -47,6 +53,7 @@ const App: React.FC = () => {
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showCustomScenarioModal, setShowCustomScenarioModal] = useState(false);
   const [callsign, setCallsign] = useState('November-One-Two-Three-Alpha-Bravo');
   const [language, setLanguage] = useState<LanguageCode>('en-US');
   const [voice, setVoice] = useState<VoiceName>('Puck');
@@ -54,6 +61,13 @@ const App: React.FC = () => {
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
+  // Training Mode State
+  const [isTrainingMode, setIsTrainingMode] = useState(false);
+  const [currentScenario, setCurrentScenario] = useState<TrainingScenario | null>(null);
+  const [allScenarios, setAllScenarios] = useState<TrainingScenario[]>(SCENARIOS);
+  const [customScenarios, setCustomScenarios] = useState<TrainingScenario[]>([]);
+  const [aiGeneratedReadback, setAiGeneratedReadback] = useState<string | null>(null);
+
   const silenceTimerRef = useRef<number | null>(null);
   const sessionPromiseRef = useRef<LiveSessionPromise | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null); // For Gemini Live (16kHz)
@@ -61,8 +75,6 @@ const App: React.FC = () => {
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   
-  // Ref to accumulate all finalized utterances within a single listening session
-  const finalizedTranscriptRef = useRef('');
   const lastConfidenceRef = useRef<number | undefined>(undefined);
 
   // Refs for audio recording
@@ -75,6 +87,10 @@ const App: React.FC = () => {
   useEffect(() => {
     setSavedSessions(sessionService.getSavedSessions());
     
+    const loadedCustomScenarios = trainingScenarioService.getCustomScenarios();
+    setCustomScenarios(loadedCustomScenarios);
+    setAllScenarios([...SCENARIOS, ...loadedCustomScenarios]);
+
     const inProgressLog = sessionService.loadInProgressSession();
     if (inProgressLog && inProgressLog.length > 0) {
         setConversationLog(inProgressLog);
@@ -111,7 +127,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (!isReviewing && conversationLog.length > 0) {
-        sessionService.saveInProgressSession(conversationLog);
+        sessionService.saveInProgressSession(conversationLog, isTrainingMode);
       }
     };
 
@@ -120,7 +136,7 @@ const App: React.FC = () => {
     // Also save periodically
     const intervalId = setInterval(() => {
       if (!isReviewing && conversationLog.length > 0) {
-        sessionService.saveInProgressSession(conversationLog);
+        sessionService.saveInProgressSession(conversationLog, isTrainingMode);
       }
     }, 5000); // Save every 5 seconds
 
@@ -128,7 +144,7 @@ const App: React.FC = () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       clearInterval(intervalId);
     };
-  }, [conversationLog, isReviewing]);
+  }, [conversationLog, isReviewing, isTrainingMode]);
 
 
   const cleanupAudio = useCallback(() => {
@@ -164,12 +180,12 @@ const App: React.FC = () => {
   const saveCurrentSession = useCallback(() => {
     setConversationLog(currentLog => {
         if (currentLog.length > 0 && !isReviewing) {
-            const updatedSessions = sessionService.saveSession(currentLog);
+            const updatedSessions = sessionService.saveSession(currentLog, isTrainingMode);
             setSavedSessions(updatedSessions);
         }
         return currentLog;
     });
-  }, [isReviewing]);
+  }, [isReviewing, isTrainingMode]);
 
   const processTranscription = useCallback(async (transcription: string, confidence?: number) => {
     setStatus(AppStatus.THINKING);
@@ -232,8 +248,41 @@ const App: React.FC = () => {
     }
   }, [callsign, language, voice]);
 
+  const processTrainingReadback = useCallback(async (userTranscription: string) => {
+    if (!currentScenario || !aiGeneratedReadback) return;
+
+    setStatus(AppStatus.CHECKING_ACCURACY);
+    
+    const historyForCheck = [...conversationLog];
+    
+    // Use the new, more specific accuracy checker for training mode
+    const feedback = await checkTrainingReadbackAccuracy(
+        currentScenario.atcInstruction.replace('{callsign}', callsign),
+        userTranscription,
+        aiGeneratedReadback, // Compare against the AI's "school solution"
+        language,
+        historyForCheck
+    );
+
+    const traineeEntry: ConversationEntry = {
+        speaker: 'TRAINEE',
+        text: userTranscription,
+        feedback: feedback,
+        confidence: lastConfidenceRef.current
+    };
+
+    // Replace the previous attempt if it exists, otherwise add the new one
+    setConversationLog(prevLog => {
+        const logWithoutLastAttempt = prevLog.at(-1)?.speaker === 'TRAINEE' ? prevLog.slice(0, -1) : prevLog;
+        return [...logWithoutLastAttempt, traineeEntry];
+    });
+
+    setStatus(AppStatus.AWAITING_USER_RESPONSE);
+
+  }, [currentScenario, language, callsign, aiGeneratedReadback, conversationLog]);
+
   const processAndStop = useCallback(async () => {
-    const transcriptionToProcess = finalizedTranscriptRef.current.trim();
+    const transcriptionToProcess = interimTranscription.trim();
 
     if (sessionPromiseRef.current) {
       try {
@@ -255,12 +304,21 @@ const App: React.FC = () => {
     setMicVolume(0);
 
     if (transcriptionToProcess) {
-      await processTranscription(transcriptionToProcess, lastConfidenceRef.current);
+      if (isTrainingMode) {
+        await processTrainingReadback(transcriptionToProcess);
+        // Status is set within processTrainingReadback to AWAITING_USER_RESPONSE
+      } else {
+        await processTranscription(transcriptionToProcess, lastConfidenceRef.current);
+        setStatus(AppStatus.IDLE);
+      }
+    } else {
+        setStatus(isTrainingMode ? AppStatus.AWAITING_USER_RESPONSE : AppStatus.IDLE);
     }
     
-    setStatus(AppStatus.IDLE);
-    saveCurrentSession();
-  }, [cleanupAudio, processTranscription, saveCurrentSession]);
+    if (!isTrainingMode && transcriptionToProcess) {
+        saveCurrentSession();
+    }
+  }, [cleanupAudio, processTranscription, saveCurrentSession, interimTranscription, isTrainingMode, processTrainingReadback]);
 
   const stopListening = useCallback(async () => {
       if (sessionPromiseRef.current) {
@@ -280,28 +338,33 @@ const App: React.FC = () => {
       }
       
       setInterimTranscription('');
-      finalizedTranscriptRef.current = '';
       setMicVolume(0);
 
-      if (status !== AppStatus.IDLE) {
-         setStatus(AppStatus.IDLE);
-         saveCurrentSession();
+      const newStatus = isTrainingMode ? AppStatus.AWAITING_USER_RESPONSE : AppStatus.IDLE;
+      if (status !== newStatus) {
+         setStatus(newStatus);
+         if (!isTrainingMode) {
+            saveCurrentSession();
+         }
       }
-  }, [cleanupAudio, saveCurrentSession, status]);
+  }, [cleanupAudio, saveCurrentSession, status, isTrainingMode]);
 
 
   const startListening = useCallback(async () => {
-    if (status !== AppStatus.IDLE && status !== AppStatus.ERROR) return;
+    if (status !== AppStatus.IDLE && status !== AppStatus.ERROR && status !== AppStatus.AWAITING_USER_RESPONSE) return;
     
-    setConversationLog(prev => (isReviewing ? [] : prev));
-    setIsReviewing(false);
-    setCurrentSessionId(null);
+    if(!isTrainingMode) {
+        setConversationLog(prev => (isReviewing ? [] : prev));
+        setIsReviewing(false);
+        setCurrentSessionId(null);
+    }
     setStatus(AppStatus.LISTENING);
     setErrorMessage(null);
     
-    finalizedTranscriptRef.current = '';
-    setRecordedAudioUrl(null);
-    recordedChunksRef.current = [];
+    if(!isTrainingMode) {
+        setRecordedAudioUrl(null);
+        recordedChunksRef.current = [];
+    }
 
     try {
       const audioConstraints = {
@@ -325,20 +388,14 @@ const App: React.FC = () => {
         
         lastConfidenceRef.current = confidence;
         
-        const currentDisplay = finalizedTranscriptRef.current 
-            ? `${finalizedTranscriptRef.current} ${text}`
-            : text;
-            
-        setInterimTranscription(currentDisplay.trim());
+        // Assume API sends cumulative transcript; replace current interim text.
+        setInterimTranscription(text);
       
-        if (isFinal) {
-            finalizedTranscriptRef.current = currentDisplay.trim();
-
-            if (finalizedTranscriptRef.current.trim().length > 0) {
-                 silenceTimerRef.current = window.setTimeout(() => {
-                    processAndStop();
-                }, ATC_INSTRUCTION_END_TIMEOUT);
-            }
+        // Reset silence timer on any transcription update.
+        if (text.trim().length > 0) {
+            silenceTimerRef.current = window.setTimeout(() => {
+                processAndStop();
+            }, ATC_INSTRUCTION_END_TIMEOUT);
         }
       };
       const onError = (error: any) => {
@@ -367,27 +424,29 @@ const App: React.FC = () => {
       scriptProcessorRef.current = scriptProcessor;
 
       // Setup for recording the user's microphone audio for download.
-      // @ts-ignore
-      recordingContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      const recContext = recordingContextRef.current;
-      const recordingMicSource = recContext.createMediaStreamSource(mediaStreamRef.current);
-      recordingDestinationNodeRef.current = recContext.createMediaStreamDestination();
-      recordingMicSource.connect(recordingDestinationNodeRef.current);
+      if (!isTrainingMode) {
+        // @ts-ignore
+        recordingContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+        const recContext = recordingContextRef.current;
+        const recordingMicSource = recContext.createMediaStreamSource(mediaStreamRef.current);
+        recordingDestinationNodeRef.current = recContext.createMediaStreamDestination();
+        recordingMicSource.connect(recordingDestinationNodeRef.current);
 
-      const mimeType = 'audio/webm';
-      mediaRecorderRef.current = new MediaRecorder(recordingDestinationNodeRef.current.stream, { mimeType });
-      mediaRecorderRef.current.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-              recordedChunksRef.current.push(event.data);
-          }
-      };
-      mediaRecorderRef.current.onstop = () => {
-          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-          const url = URL.createObjectURL(blob);
-          setRecordedAudioUrl(url);
-          recordedChunksRef.current = [];
-      };
-      mediaRecorderRef.current.start();
+        const mimeType = 'audio/webm';
+        mediaRecorderRef.current = new MediaRecorder(recordingDestinationNodeRef.current.stream, { mimeType });
+        mediaRecorderRef.current.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                recordedChunksRef.current.push(event.data);
+            }
+        };
+        mediaRecorderRef.current.onstop = () => {
+            const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            setRecordedAudioUrl(url);
+            recordedChunksRef.current = [];
+        };
+        mediaRecorderRef.current.start();
+      }
 
       scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
@@ -400,6 +459,12 @@ const App: React.FC = () => {
         requestAnimationFrame(() => {
             setMicVolume(rms);
         });
+
+        // Noise Gate: If the volume is below the threshold, treat it as silence and do not send.
+        // This prevents constant low-level background noise from being transcribed.
+        if (rms < NOISE_GATE_THRESHOLD) {
+            return; // Gate is closed, stop processing this audio chunk.
+        }
 
         const l = inputData.length;
         const int16 = new Int16Array(l);
@@ -426,24 +491,71 @@ const App: React.FC = () => {
       setErrorMessage('Could not access microphone. Please check permissions and try again.');
       setStatus(AppStatus.ERROR);
     }
-  }, [status, isReviewing, language, processAndStop, stopListening]);
+  }, [status, isReviewing, language, processAndStop, stopListening, isTrainingMode]);
 
   const handleToggleListening = useCallback(async () => {
-    if (status === AppStatus.IDLE || status === AppStatus.ERROR) {
+    // Normal mode start
+    if (!isTrainingMode && (status === AppStatus.IDLE || status === AppStatus.ERROR)) {
       await startListening();
-    } else {
-      // User manually stops.
+      return;
+    }
+    
+    // Training mode start (listening for user read-back)
+    if (isTrainingMode && status === AppStatus.AWAITING_USER_RESPONSE) {
+      await startListening();
+      return;
+    }
+
+    // Stop listening (applies to both modes)
+    if (status === AppStatus.LISTENING) {
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
-      // The most up-to-date transcript is in the state. Commit it before processing.
-      finalizedTranscriptRef.current = interimTranscription;
       await processAndStop();
     }
-  }, [status, startListening, processAndStop, interimTranscription]);
+  }, [status, startListening, processAndStop, isTrainingMode]);
+
+  const handleSelectScenario = useCallback(async (scenario: TrainingScenario) => {
+      setCurrentScenario(scenario);
+      setStatus(AppStatus.SPEAKING);
+
+      const instruction = scenario.atcInstruction.replace('{callsign}', callsign);
+      const atcEntry: ConversationEntry = { speaker: 'ATC', text: instruction };
+      
+      // Generate the correct read-back immediately to show the user
+      setStatus(AppStatus.THINKING);
+      const { primary: aiReadbackText, alternatives } = await generateReadback(instruction, callsign, language, [atcEntry]);
+      setAiGeneratedReadback(aiReadbackText);
+
+      const aiPilotEntry: ConversationEntry = {
+          speaker: 'PILOT',
+          text: aiReadbackText,
+          alternatives: alternatives,
+      };
+
+      setConversationLog([atcEntry, aiPilotEntry]);
+      
+      setStatus(AppStatus.SPEAKING);
+      const audioBuffer = await generateSpeech(instruction, voice);
+      if (audioBuffer) {
+        // @ts-ignore
+        const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        const source = playbackContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(playbackContext.destination);
+        source.start();
+        source.onended = () => {
+          playbackContext.close();
+          setStatus(AppStatus.AWAITING_USER_RESPONSE);
+        };
+      } else {
+        setStatus(AppStatus.AWAITING_USER_RESPONSE);
+      }
+  }, [callsign, voice, language]);
 
   const handleRegenerateReadback = useCallback(async () => {
+    if (isTrainingMode) return;
     const originalStatus = status;
     const lastAtcEntryIndex = conversationLog.map(e => e.speaker).lastIndexOf('ATC');
     if (lastAtcEntryIndex === -1) return;
@@ -490,12 +602,11 @@ const App: React.FC = () => {
         setStatus(returnStatus);
         saveCurrentSession();
     }
-  }, [conversationLog, callsign, language, status, voice, saveCurrentSession]);
+  }, [conversationLog, callsign, language, status, voice, saveCurrentSession, isTrainingMode]);
   
   const handleClearTranscription = useCallback(() => {
     if (status !== AppStatus.LISTENING) return;
     setInterimTranscription('');
-    finalizedTranscriptRef.current = '';
   }, [status]);
 
   const handleNewSession = useCallback(() => {
@@ -572,6 +683,35 @@ const App: React.FC = () => {
     setShowSettings(false);
   };
 
+  const handleToggleTrainingMode = (enabled: boolean) => {
+    stopListening();
+    setIsTrainingMode(enabled);
+    setConversationLog([]);
+    setCurrentScenario(null);
+    setStatus(AppStatus.IDLE);
+    setInterimTranscription('');
+  };
+  
+  const handleSaveCustomScenario = (scenario: TrainingScenario) => {
+    const updated = trainingScenarioService.saveCustomScenario(scenario);
+    setCustomScenarios(updated);
+    setAllScenarios([...SCENARIOS, ...updated]);
+  };
+  
+  const handleDeleteCustomScenario = (scenarioKey: string) => {
+    const updated = trainingScenarioService.deleteCustomScenario(scenarioKey);
+    setCustomScenarios(updated);
+    setAllScenarios([...SCENARIOS, ...updated]);
+  };
+  
+  const handleGenerateAIScenario = async (scenarioType: string) => {
+    return await generateCustomScenario(scenarioType, language);
+  };
+
+  const handleCrosscheckScenario = async (instruction: string, readback: string): Promise<any> => {
+    // We can reuse the main accuracy checker for this, as it's a general check
+    return await checkReadbackAccuracy(instruction, readback, language, []);
+  };
 
   useEffect(() => {
     return () => {
@@ -601,6 +741,14 @@ const App: React.FC = () => {
         onSave={handleSaveSettings} 
         onClose={() => setShowSettings(false)} 
        />}
+       {showCustomScenarioModal && <CustomScenarioModal 
+            onClose={() => setShowCustomScenarioModal(false)}
+            onSave={handleSaveCustomScenario}
+            onDelete={handleDeleteCustomScenario}
+            onGenerate={handleGenerateAIScenario}
+            existingScenarios={customScenarios}
+            onCrosscheck={handleCrosscheckScenario}
+       />}
       <div className="w-full max-w-3xl mx-auto flex flex-col space-y-6">
         <header className="text-center relative border-b border-gray-700/50 pb-6">
           <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">CommScript ATC</h1>
@@ -623,9 +771,18 @@ const App: React.FC = () => {
           </div>
         </header>
         <main className="flex flex-col flex-grow items-center justify-center space-y-6">
+           <TrainingModeBar 
+              isEnabled={isTrainingMode}
+              onToggle={handleToggleTrainingMode}
+              scenarios={allScenarios}
+              onSelectScenario={handleSelectScenario}
+              isInteractionDisabled={status !== AppStatus.IDLE && status !== AppStatus.AWAITING_USER_RESPONSE}
+              onManageCustom={() => setShowCustomScenarioModal(true)}
+           />
            <ConversationLog log={conversationLog} interimTranscription={interimTranscription} />
            <ControlPanel 
              status={status} 
+             isTrainingMode={isTrainingMode}
              onToggleListening={handleToggleListening}
              onRegenerateReadback={handleRegenerateReadback}
              onClearTranscription={handleClearTranscription}
