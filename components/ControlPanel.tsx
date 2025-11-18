@@ -1,3 +1,5 @@
+
+
 import React from 'react';
 import { AppStatus } from '../types';
 import MicrophoneIcon from './icons/MicrophoneIcon';
@@ -6,17 +8,22 @@ import SpinnerIcon from './icons/SpinnerIcon';
 import MicVisualizer from './MicVisualizer';
 import DownloadIcon from './icons/DownloadIcon';
 import WarningIcon from './icons/WarningIcon';
+import RedoIcon from './icons/RedoIcon';
+import BackspaceIcon from './icons/BackspaceIcon';
 
 interface ControlPanelProps {
   status: AppStatus;
   onToggleListening: () => void;
+  onRegenerateReadback: () => void;
+  onClearTranscription: () => void;
+  isRegenerateDisabled: boolean;
   micVolume: number;
   recordedAudioUrl: string | null;
   callsign: string;
   errorMessage?: string | null;
 }
 
-const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, micVolume, recordedAudioUrl, callsign, errorMessage }) => {
+const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage }) => {
   const isListening = status !== AppStatus.IDLE && status !== AppStatus.ERROR;
 
   const getStatusText = () => {
@@ -63,14 +70,39 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, 
       <MicVisualizer volume={micVolume} />
       <button
         onClick={onToggleListening}
-        className={`flex items-center justify-center w-24 h-24 rounded-full text-white transition-all duration-300 ease-in-out shadow-2xl focus:outline-none focus:ring-4 focus:ring-opacity-50 ${buttonBgColor} ${isListening ? 'focus:ring-red-500' : 'focus:ring-blue-500'}`}
+        className={`my-2 flex items-center justify-center w-24 h-24 rounded-full text-white transition-all duration-300 ease-in-out shadow-2xl focus:outline-none focus:ring-4 focus:ring-opacity-50 ${buttonBgColor} ${isListening ? 'focus:ring-red-500' : 'focus:ring-blue-500'}`}
         aria-label={isListening ? 'Stop listening' : 'Start listening'}
       >
         {buttonIcon()}
       </button>
 
+      <div className="flex items-center justify-center gap-2 mb-2">
+        <button
+          onClick={onRegenerateReadback}
+          disabled={isRegenerateDisabled}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700/80 rounded-lg text-gray-300 text-sm transition-colors duration-200 enabled:hover:bg-gray-600/80 enabled:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label="Regenerate read-back for last ATC instruction"
+          title="Regenerate read-back for last ATC instruction"
+        >
+          <RedoIcon className="w-4 h-4" />
+          <span>Regenerate</span>
+        </button>
+
+        {status === AppStatus.LISTENING && (
+            <button
+                onClick={onClearTranscription}
+                className="flex items-center gap-2 px-4 py-2 bg-yellow-700/80 rounded-lg text-yellow-100 text-sm transition-colors duration-200 hover:bg-yellow-600/80 hover:text-white"
+                aria-label="Clear current transcription"
+                title="Clear current transcription"
+            >
+                <BackspaceIcon className="w-4 h-4" />
+                <span>Clear Input</span>
+            </button>
+        )}
+      </div>
+
       {recordedAudioUrl && status === AppStatus.IDLE && (
-        <div className="mt-4">
+        <div className="mt-2">
             <a
                 href={recordedAudioUrl}
                 download={`atc-session-${callsign}-${new Date().toISOString()}.webm`}

@@ -2,7 +2,7 @@
 import { GoogleGenAI } from '@google/genai';
 // Fix: Correct React import statement.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { AppStatus, ConversationEntry, Session, LanguageCode, SUPPORTED_LANGUAGES } from './types';
+import { AppStatus, ConversationEntry, Session, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, AVAILABLE_VOICES } from './types';
 import { generateReadback, generateSpeech, connectToLive, checkReadbackAccuracy, extractCallsign } from './services/geminiService';
 import * as sessionService from './services/sessionService';
 import ControlPanel from './components/ControlPanel';
@@ -47,6 +47,7 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [callsign, setCallsign] = useState('November-One-Two-Three-Alpha-Bravo');
   const [language, setLanguage] = useState<LanguageCode>('en-US');
+  const [voice, setVoice] = useState<VoiceName>('Puck');
   const [micVolume, setMicVolume] = useState(0);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -56,7 +57,11 @@ const App: React.FC = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const fullTranscriptionRef = useRef('');
+  
+  // Ref to hold the transcription of the current utterance (interim or final)
+  const currentUtteranceRef = useRef('');
+  // Ref to accumulate all finalized utterances within a single listening session
+  const finalizedTranscriptRef = useRef('');
   const lastConfidenceRef = useRef<number | undefined>(undefined);
 
   // Refs for audio recording
@@ -69,6 +74,11 @@ const App: React.FC = () => {
   useEffect(() => {
     setSavedSessions(sessionService.getSavedSessions());
     
+    const inProgressLog = sessionService.loadInProgressSession();
+    if (inProgressLog && inProgressLog.length > 0) {
+        setConversationLog(inProgressLog);
+    }
+    
     const savedCallsign = localStorage.getItem('atc-copilot-callsign');
     if (savedCallsign) {
       setCallsign(savedCallsign);
@@ -76,6 +86,10 @@ const App: React.FC = () => {
     const savedLanguage = localStorage.getItem('atc-copilot-language') as LanguageCode;
     if (savedLanguage && SUPPORTED_LANGUAGES[savedLanguage]) {
         setLanguage(savedLanguage);
+    }
+    const savedVoice = localStorage.getItem('atc-copilot-voice') as VoiceName;
+    if (savedVoice && AVAILABLE_VOICES[savedVoice]) {
+        setVoice(savedVoice);
     }
 
     const checkApiKey = async () => {
@@ -91,6 +105,29 @@ const App: React.FC = () => {
         setShowOnboarding(true);
     }
   }, []);
+  
+  // Autosave conversation log
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (!isReviewing && conversationLog.length > 0) {
+        sessionService.saveInProgressSession(conversationLog);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Also save periodically
+    const intervalId = setInterval(() => {
+      if (!isReviewing && conversationLog.length > 0) {
+        sessionService.saveInProgressSession(conversationLog);
+      }
+    }, 5000); // Save every 5 seconds
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      clearInterval(intervalId);
+    };
+  }, [conversationLog, isReviewing]);
 
 
   const cleanupAudio = useCallback(() => {
@@ -123,16 +160,80 @@ const App: React.FC = () => {
 
   }, []);
 
+  const saveCurrentSession = useCallback(() => {
+    setConversationLog(currentLog => {
+        if (currentLog.length > 0 && !isReviewing) {
+            const updatedSessions = sessionService.saveSession(currentLog);
+            setSavedSessions(updatedSessions);
+        }
+        return currentLog;
+    });
+  }, [isReviewing]);
+
+
+  const processTranscription = useCallback(async (transcription: string, confidence?: number) => {
+    setStatus(AppStatus.THINKING);
+
+    const atcEntry: ConversationEntry = { speaker: 'ATC', text: transcription, confidence };
+    setConversationLog(prev => [...prev, atcEntry]);
+    
+    const historyForCallsign = [...conversationLog];
+    const detectedCallsign = await extractCallsign(transcription, language, historyForCallsign);
+    let activeCallsign = callsign;
+
+    if (detectedCallsign && detectedCallsign !== callsign) {
+      console.log(`Callsign auto-detected and updated to: ${detectedCallsign}`);
+      setCallsign(detectedCallsign);
+      localStorage.setItem('atc-copilot-callsign', detectedCallsign);
+      activeCallsign = detectedCallsign;
+    }
+    
+    const historyForReadback = [...conversationLog, atcEntry];
+    const { primary: readbackText, alternatives } = await generateReadback(transcription, activeCallsign, language, historyForReadback);
+
+    setStatus(AppStatus.CHECKING_ACCURACY);
+    const feedback = await checkReadbackAccuracy(transcription, readbackText, language, historyForReadback);
+
+    const pilotEntry: ConversationEntry = { speaker: 'PILOT', text: readbackText, feedback, alternatives };
+    setConversationLog(prev => [...prev, pilotEntry]);
+    
+    if (feedback.accuracy === 'CORRECT') {
+      setStatus(AppStatus.SPEAKING);
+      const audioBuffer = await generateSpeech(readbackText, voice);
+
+      if (audioBuffer) {
+        // @ts-ignore
+        const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        const source = playbackContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(playbackContext.destination);
+
+        const recContext = recordingContextRef.current;
+        const recDest = recordingDestinationNodeRef.current;
+        if (recContext && recDest) {
+            const ttsStreamDest = playbackContext.createMediaStreamDestination();
+            source.connect(ttsStreamDest);
+            const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
+            ttsRecordingSource.connect(recDest);
+        }
+
+        source.start();
+        source.onended = () => {
+          playbackContext.close();
+          setStatus(AppStatus.LISTENING);
+        };
+      } else {
+        setStatus(AppStatus.LISTENING);
+      }
+    } else {
+      setStatus(AppStatus.LISTENING);
+    }
+  }, [conversationLog, callsign, language, voice]);
+
+
   const stopListening = useCallback(async () => {
-      if (conversationLog.length > 0 && !isReviewing) {
-          const updatedSessions = sessionService.saveSession(conversationLog);
-          setSavedSessions(updatedSessions);
-      }
-
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop(); // This will trigger onstop and set the URL
-      }
-
+      const transcriptionToProcess = finalizedTranscriptRef.current.trim();
+      
       if (sessionPromiseRef.current) {
         try {
             const session = await sessionPromiseRef.current;
@@ -144,71 +245,19 @@ const App: React.FC = () => {
         }
       }
       cleanupAudio();
-      setStatus(AppStatus.IDLE);
-      setInterimTranscription('');
-      fullTranscriptionRef.current = '';
-      setMicVolume(0);
-  }, [cleanupAudio, conversationLog, isReviewing]);
-
-
-  const processTranscription = useCallback(async (transcription: string, confidence?: number) => {
-    setStatus(AppStatus.THINKING);
-    setConversationLog(prev => [...prev, { speaker: 'ATC', text: transcription, confidence }]);
-    
-    // Automatically detect and update callsign
-    const detectedCallsign = await extractCallsign(transcription, language);
-    let activeCallsign = callsign;
-
-    if (detectedCallsign && detectedCallsign !== callsign) {
-      console.log(`Callsign auto-detected and updated to: ${detectedCallsign}`);
-      setCallsign(detectedCallsign);
-      localStorage.setItem('atc-copilot-callsign', detectedCallsign);
-      activeCallsign = detectedCallsign;
-    }
-    
-    const { primary: readbackText, alternatives } = await generateReadback(transcription, activeCallsign, language);
-
-    setStatus(AppStatus.CHECKING_ACCURACY);
-    const feedback = await checkReadbackAccuracy(transcription, readbackText, language);
-
-    setConversationLog(prev => [...prev, { speaker: 'PILOT', text: readbackText, feedback, alternatives }]);
-    
-    if (feedback.accuracy === 'CORRECT') {
-      setStatus(AppStatus.SPEAKING);
-      const audioBuffer = await generateSpeech(readbackText);
-
-      if (audioBuffer) {
-        // @ts-ignore
-        const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        const source = playbackContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(playbackContext.destination);
-
-        // --- Pipe audio to the recording context as well ---
-        const recContext = recordingContextRef.current;
-        const recDest = recordingDestinationNodeRef.current;
-        if (recContext && recDest) {
-            const ttsStreamDest = playbackContext.createMediaStreamDestination();
-            source.connect(ttsStreamDest);
-            const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
-            ttsRecordingSource.connect(recDest);
-        }
-        // --- End recording pipe ---
-
-        source.start();
-        source.onended = () => {
-          playbackContext.close();
-          setStatus(AppStatus.LISTENING); 
-        };
-      } else {
-        setStatus(AppStatus.LISTENING);
+      
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
       }
-    } else {
-      // If the generated readback is deemed incorrect by the accuracy check,
-      // do not speak it. Immediately return to the listening state.
-      setStatus(AppStatus.LISTENING);
-    }
-  }, [callsign, language]);
+      
+      setInterimTranscription('');
+      setMicVolume(0);
+
+      // No longer automatically process on stop. User has full control.
+      setStatus(AppStatus.IDLE);
+      saveCurrentSession();
+
+  }, [cleanupAudio, saveCurrentSession]);
 
 
   const startListening = useCallback(async () => {
@@ -219,56 +268,57 @@ const App: React.FC = () => {
     setCurrentSessionId(null);
     setStatus(AppStatus.LISTENING);
     setErrorMessage(null);
-    fullTranscriptionRef.current = '';
-    setRecordedAudioUrl(null); // Clear previous recording
+    
+    finalizedTranscriptRef.current = '';
+    currentUtteranceRef.current = '';
+    setRecordedAudioUrl(null);
     recordedChunksRef.current = [];
 
     try {
-      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioConstraints = {
+        audio: {
+            noiseSuppression: true,
+            echoCancellation: true,
+            autoGainControl: true,
+        },
+      };
+      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia(audioConstraints);
 
-      // --- Gemini Live Setup (16kHz context) ---
       // @ts-ignore
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const audioContext = audioContextRef.current;
 
       const onTranscriptionUpdate = (text: string, isFinal: boolean, confidence?: number) => {
         lastConfidenceRef.current = confidence;
-        
-        // The API sends the full cumulative transcription in the `text` field.
-        // We update our ref with the latest text. An empty text can be received.
-        if (text) {
-            fullTranscriptionRef.current = text;
-        }
+        currentUtteranceRef.current = text;
         
         if (isFinal) {
-            // When the turn is complete, process the final transcription from the ref.
-            setInterimTranscription('');
-            if (fullTranscriptionRef.current.trim().length > 0) {
-              processTranscription(fullTranscriptionRef.current.trim(), lastConfidenceRef.current);
+            if (currentUtteranceRef.current.trim().length > 0) {
+                finalizedTranscriptRef.current = finalizedTranscriptRef.current 
+                    ? `${finalizedTranscriptRef.current} ${currentUtteranceRef.current.trim()}`
+                    : currentUtteranceRef.current.trim();
             }
-            // Reset for the next turn.
-            fullTranscriptionRef.current = '';
-            lastConfidenceRef.current = undefined;
-        } else {
-            // For interim results, just update the display with the latest full text.
-            setInterimTranscription(fullTranscriptionRef.current);
+            currentUtteranceRef.current = ''; // Reset for next utterance
         }
+        
+        const currentDisplay = finalizedTranscriptRef.current 
+            ? `${finalizedTranscriptRef.current} ${currentUtteranceRef.current}`
+            : currentUtteranceRef.current;
+            
+        setInterimTranscription(currentDisplay.trim());
       };
       const onError = (error: any) => {
         console.error("Live connection error", error);
         let userMessage = 'An unexpected error occurred. Please try again.';
 
-        // Specific check for API key issues.
         if (error.message && (
             error.message.includes("API key not valid") ||
             error.message.includes("permission to access") ||
             error.message.includes("Requested entity was not found") ||
-            // This error can also indicate a problem with the key's permissions/project setup.
             error.message.includes("Request contains an invalid argument")
         )) {
             userMessage = 'Your API key may be invalid or lack necessary permissions. Please select a different key.';
-            console.log("API key issue detected, resetting key state.", error.message);
-            setIsApiKeyReady(false); // This will bring up the API key prompt.
+            setIsApiKeyReady(false);
         } else if (error.message && error.message.includes("Network error")) {
             userMessage = 'A network error occurred. Please check your connection and try again.';
         }
@@ -279,7 +329,6 @@ const App: React.FC = () => {
       sessionPromiseRef.current = connectToLive(onTranscriptionUpdate, onError, language);
       const geminiMicSource = audioContext.createMediaStreamSource(mediaStreamRef.current);
       
-      // --- Noise Reduction Setup for Gemini ---
       const noiseGate = audioContext.createDynamicsCompressor();
       noiseGate.threshold.setValueAtTime(-50, audioContext.currentTime);
       noiseGate.knee.setValueAtTime(40, audioContext.currentTime);
@@ -290,14 +339,12 @@ const App: React.FC = () => {
       const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
       scriptProcessorRef.current = scriptProcessor;
 
-      // --- Session Recording Setup (separate context) ---
       // @ts-ignore
       recordingContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const recContext = recordingContextRef.current;
       const recordingMicSource = recContext.createMediaStreamSource(mediaStreamRef.current);
       recordingDestinationNodeRef.current = recContext.createMediaStreamDestination();
       
-      // --- Noise Reduction for Recording ---
       const recordingNoiseGate = recContext.createDynamicsCompressor();
       recordingNoiseGate.threshold.setValueAtTime(-50, recContext.currentTime);
       recordingNoiseGate.knee.setValueAtTime(40, recContext.currentTime);
@@ -322,8 +369,6 @@ const App: React.FC = () => {
           recordedChunksRef.current = [];
       };
       mediaRecorderRef.current.start();
-      // --- End Recording Setup ---
-
 
       scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
@@ -353,7 +398,6 @@ const App: React.FC = () => {
         }
       };
       
-      // Connect the audio graph for Gemini: Mic -> Noise Gate -> Script Processor -> Destination
       geminiMicSource.connect(noiseGate);
       noiseGate.connect(scriptProcessor);
       scriptProcessor.connect(audioContext.destination);
@@ -362,22 +406,112 @@ const App: React.FC = () => {
       console.error("Failed to start microphone:", error);
       setStatus(AppStatus.ERROR);
     }
-  }, [status, stopListening, processTranscription, isReviewing, callsign, language]);
+  }, [status, stopListening, isReviewing, language]);
 
-  const handleToggleListening = useCallback(() => {
+  const handleToggleListening = useCallback(async () => {
     if (status === AppStatus.IDLE || status === AppStatus.ERROR) {
-      startListening();
+      await startListening();
     } else {
-      stopListening();
+      // User manually stops. The full transcript is ready for processing.
+      const transcriptionToProcess = finalizedTranscriptRef.current.trim();
+      
+      // Stop the underlying listening services
+      if (sessionPromiseRef.current) {
+        try {
+            const session = await sessionPromiseRef.current;
+            session.close();
+        } catch (e) {
+            console.error("Error closing session:", e);
+        } finally {
+            sessionPromiseRef.current = null;
+        }
+      }
+      cleanupAudio();
+      
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      
+      setInterimTranscription('');
+      setMicVolume(0);
+
+      // Now process the complete transcript
+      if (transcriptionToProcess) {
+        await processTranscription(transcriptionToProcess, lastConfidenceRef.current);
+      } else {
+        setStatus(AppStatus.IDLE);
+        saveCurrentSession();
+      }
     }
-  }, [status, startListening, stopListening]);
+  }, [status, startListening, processTranscription, cleanupAudio, saveCurrentSession]);
+
+  const handleRegenerateReadback = useCallback(async () => {
+    const originalStatus = status;
+    const lastAtcEntryIndex = conversationLog.map(e => e.speaker).lastIndexOf('ATC');
+    if (lastAtcEntryIndex === -1) return;
+
+    const lastAtcEntry = conversationLog[lastAtcEntryIndex];
+    const historyForRegen = conversationLog.slice(0, lastAtcEntryIndex + 1);
+    
+    const returnStatus = (originalStatus === AppStatus.LISTENING) ? AppStatus.LISTENING : AppStatus.IDLE;
+    
+    setConversationLog(prev => prev.slice(0, lastAtcEntryIndex + 1));
+    
+    setStatus(AppStatus.THINKING);
+    const { primary: readbackText, alternatives } = await generateReadback(lastAtcEntry.text, callsign, language, historyForRegen);
+    
+    setStatus(AppStatus.CHECKING_ACCURACY);
+    const feedback = await checkReadbackAccuracy(lastAtcEntry.text, readbackText, language, historyForRegen);
+    
+    setConversationLog(prev => [...prev, { speaker: 'PILOT', text: readbackText, feedback, alternatives }]);
+    
+    if (feedback.accuracy === 'CORRECT') {
+        setStatus(AppStatus.SPEAKING);
+        const audioBuffer = await generateSpeech(readbackText, voice);
+        if (audioBuffer) {
+            // @ts-ignore
+            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            const source = playbackContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(playbackContext.destination);
+
+            const recContext = recordingContextRef.current;
+            const recDest = recordingDestinationNodeRef.current;
+            if (recContext && recDest && mediaRecorderRef.current?.state === 'recording') {
+                const ttsStreamDest = playbackContext.createMediaStreamDestination();
+                source.connect(ttsStreamDest);
+                const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
+                ttsRecordingSource.connect(recDest);
+            }
+
+            source.start();
+            source.onended = () => {
+                playbackContext.close();
+                setStatus(returnStatus);
+            };
+        } else {
+            setStatus(returnStatus);
+        }
+    } else {
+        setStatus(returnStatus);
+    }
+  }, [conversationLog, callsign, language, status, voice]);
   
+  const handleClearTranscription = useCallback(() => {
+    if (status !== AppStatus.LISTENING) return;
+    
+    setInterimTranscription('');
+    currentUtteranceRef.current = '';
+    finalizedTranscriptRef.current = '';
+  }, [status]);
+
   const handleNewSession = useCallback(() => {
     stopListening();
     setConversationLog([]);
     setIsReviewing(false);
     setCurrentSessionId(null);
     setRecordedAudioUrl(null);
+    sessionService.clearInProgressSession();
   }, [stopListening]);
 
   const handleLoadSession = useCallback((session: Session) => {
@@ -386,6 +520,7 @@ const App: React.FC = () => {
     setIsReviewing(true);
     setCurrentSessionId(session.id);
     setRecordedAudioUrl(null);
+    sessionService.clearInProgressSession();
   }, [stopListening]);
   
   const handleDeleteSession = useCallback((sessionId: number) => {
@@ -406,11 +541,9 @@ const App: React.FC = () => {
     try {
         const apiKey = process.env.API_KEY;
         if (!apiKey) {
-            console.warn("API key not found in environment for verification.");
             return false;
         }
         const ai = new GoogleGenAI({ apiKey });
-        // A simple, fast, and cheap request to verify the key and its permissions.
         await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: 'ping',
@@ -436,21 +569,26 @@ const App: React.FC = () => {
     setShowOnboarding(false);
   };
 
-  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode) => {
+  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode, newVoice: VoiceName) => {
     setCallsign(newCallsign);
     localStorage.setItem('atc-copilot-callsign', newCallsign);
     setLanguage(newLanguage);
     localStorage.setItem('atc-copilot-language', newLanguage);
+    setVoice(newVoice);
+    localStorage.setItem('atc-copilot-voice', newVoice);
     setShowSettings(false);
   };
 
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopListening();
     };
   }, [stopListening]);
+
+  const canRegenerate = conversationLog.some(e => e.speaker === 'ATC');
+  const isBusy = [AppStatus.THINKING, AppStatus.CHECKING_ACCURACY, AppStatus.SPEAKING].includes(status);
+  const isRegenerateDisabled = !canRegenerate || isBusy;
 
   if (!isApiKeyReady) {
     return (
@@ -466,6 +604,7 @@ const App: React.FC = () => {
       {showSettings && <SettingsModal 
         currentCallsign={callsign} 
         currentLanguage={language}
+        currentVoice={voice}
         onSave={handleSaveSettings} 
         onClose={() => setShowSettings(false)} 
        />}
@@ -495,6 +634,9 @@ const App: React.FC = () => {
            <ControlPanel 
              status={status} 
              onToggleListening={handleToggleListening}
+             onRegenerateReadback={handleRegenerateReadback}
+             onClearTranscription={handleClearTranscription}
+             isRegenerateDisabled={isRegenerateDisabled}
              micVolume={status === AppStatus.LISTENING ? micVolume : 0}
              recordedAudioUrl={recordedAudioUrl}
              callsign={callsign}

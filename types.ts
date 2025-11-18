@@ -45,3 +45,13 @@ export const SUPPORTED_LANGUAGES = {
 } as const;
 
 export type LanguageCode = keyof typeof SUPPORTED_LANGUAGES;
+
+export const AVAILABLE_VOICES = {
+  'Puck': 'Standard Male 1',
+  'Kore': 'Standard Female',
+  'Zephyr': 'Calm Male',
+  'Charon': 'Deep Male',
+  'Fenrir': 'Authoritative Male',
+} as const;
+
+export type VoiceName = keyof typeof AVAILABLE_VOICES;

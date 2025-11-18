@@ -1,6 +1,6 @@
 // Fix: Remove LiveSession from import as it is not an exported member.
 import { GoogleGenAI, Modality, Type, LiveServerMessage } from "@google/genai";
-import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES } from "../types";
+import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES, VoiceName, ConversationEntry } from "../types";
 
 // --- Audio Decoding/Encoding Helpers ---
 
@@ -41,13 +41,27 @@ const getApiKey = () => {
   return apiKey;
 };
 
+const formatHistoryForPrompt = (history: ConversationEntry[]): string => {
+    if (!history || history.length === 0) {
+        return "No recent communication history.";
+    }
+    // Take the last 4 entries to keep the context relevant and the prompt concise
+    return history
+        .slice(-4)
+        .map(entry => `${entry.speaker}: ${entry.text}`)
+        .join('\n');
+};
+
 // --- Gemini API Service ---
 
-export const generateReadback = async (transcription: string, callsign: string, language: LanguageCode): Promise<{ primary: string, alternatives: string[] }> => {
+export const generateReadback = async (transcription: string, callsign: string, language: LanguageCode, history: ConversationEntry[]): Promise<{ primary: string, alternatives: string[] }> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const languageName = SUPPORTED_LANGUAGES[language];
   const prompt = `You are an expert pilot assistant responsible for generating accurate read-backs.
   Given the following Air Traffic Control (ATC) instruction in ${languageName}, your task is to generate the most standard, correct pilot read-back, as well as a few other common, equally correct alternative phraseologies.
+
+  **Recent Communication History (for context):**
+  ${formatHistoryForPrompt(history)}
 
   **Instructions:**
   1.  Generate a \`primary\` read-back. This should be the most common, by-the-book phraseology.
@@ -55,7 +69,7 @@ export const generateReadback = async (transcription: string, callsign: string, 
   3.  Both the primary and alternative read-backs must include the aircraft callsign '${callsign}'.
   4.  All responses must be in ${languageName}.
 
-  **ATC Instruction:**
+  **Current ATC Instruction:**
   "${transcription}"
   `;
   
@@ -100,17 +114,21 @@ export const generateReadback = async (transcription: string, callsign: string, 
   }
 };
 
-export const extractCallsign = async (transcription: string, language: LanguageCode): Promise<string | null> => {
+export const extractCallsign = async (transcription: string, language: LanguageCode, history: ConversationEntry[]): Promise<string | null> => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const languageName = SUPPORTED_LANGUAGES[language];
     const prompt = `
       Analyze the following Air Traffic Control (ATC) transcription in ${languageName}.
       Your task is to identify and extract the full aircraft callsign.
       - The callsign should be returned in phonetic alphabet format, with words separated by hyphens (e.g., "November-One-Two-Three-Alpha-Bravo", "Skywest-Three-Four-Five").
-      - If a clear aircraft callsign is present, extract it.
+      - If a clear aircraft callsign is present, extract it. Use the recent history to confirm if possible.
       - If no callsign is mentioned, or if it's ambiguous, return null.
   
-      ATC Transcription: "${transcription}"
+      **Recent Communication History (for context):**
+      ${formatHistoryForPrompt(history)}
+
+      **Current ATC Transcription:**
+      "${transcription}"
     `;
     
     const responseSchema = {
@@ -144,13 +162,13 @@ export const extractCallsign = async (transcription: string, language: LanguageC
     }
   };
 
-export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadback: string, language: LanguageCode): Promise<ReadbackFeedback> => {
+export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadback: string, language: LanguageCode, history: ConversationEntry[]): Promise<ReadbackFeedback> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const languageName = SUPPORTED_LANGUAGES[language];
   const prompt = `You are an expert Certified Flight Instructor (CFI) specializing in radio communications. Your task is to provide a detailed, "fuzzy" analysis of a pilot's read-back of an Air Traffic Control (ATC) instruction, focusing on semantic and numerical correctness rather than a strict word-for-word match. Both the instruction and the read-back are in ${languageName}.
 
   **Primary Goal:**
-  Determine if the read-back is operationally 'CORRECT' or 'INCORRECT'. A read-back is only 'CORRECT' if all critical information is repeated accurately.
+  Determine if the read-back is operationally 'CORRECT' or 'INCORRECT'. A read-back is only 'CORRECT' if all critical information is repeated accurately. Use the conversation history to understand the context.
 
   **Analysis Guidelines:**
   1.  **Strict on Critical Data:** Altitudes, headings, frequencies, squawk codes, clearances (e.g., "cleared for takeoff"), and runway numbers MUST be read back precisely. Any deviation, omission, or addition of these critical elements makes the entire read-back 'INCORRECT'.
@@ -163,6 +181,9 @@ export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadbac
       *   \`correct\`: The component is a perfect or near-perfect match of the instruction.
       *   \`acceptable_variation\`: The component is not a word-for-word match but is operationally correct and safe (e.g., includes a filler word).
       *   \`incorrect\`: The component contains a significant error (wrong number, wrong command) or is missing.
+
+  **Recent Communication History (for context):**
+  ${formatHistoryForPrompt(history)}
 
   **Output Requirements:**
   - Provide a 'CORRECT' or 'INCORRECT' \`accuracy\` rating.
@@ -227,7 +248,7 @@ export const checkReadbackAccuracy = async (atcInstruction: string, pilotReadbac
 };
 
 
-export const generateSpeech = async (text: string): Promise<AudioBuffer | null> => {
+export const generateSpeech = async (text: string, voiceName: VoiceName): Promise<AudioBuffer | null> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   try {
     const response = await ai.models.generateContent({
@@ -237,7 +258,7 @@ export const generateSpeech = async (text: string): Promise<AudioBuffer | null> 
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Puck' }, // A clear, professional voice
+            prebuiltVoiceConfig: { voiceName: voiceName },
           },
         },
       },
@@ -290,6 +311,7 @@ export const connectToLive = (
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
             },
+            systemInstruction: 'You are an expert Air Traffic Control radio transcriber. Your sole function is to accurately transcribe ATC communications. Do not generate conversational responses.',
         },
     });
 };

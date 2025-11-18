@@ -1,21 +1,23 @@
 import React, { useState } from 'react';
-import { LanguageCode, SUPPORTED_LANGUAGES } from '../types';
+import { LanguageCode, SUPPORTED_LANGUAGES, VoiceName, AVAILABLE_VOICES } from '../types';
 
 interface SettingsModalProps {
   currentCallsign: string;
   currentLanguage: LanguageCode;
-  onSave: (newCallsign: string, newLanguage: LanguageCode) => void;
+  currentVoice: VoiceName;
+  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: VoiceName) => void;
   onClose: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, onSave, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, onSave, onClose }) => {
   const [callsign, setCallsign] = useState(currentCallsign);
   const [language, setLanguage] = useState<LanguageCode>(currentLanguage);
+  const [voice, setVoice] = useState<VoiceName>(currentVoice);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (callsign.trim()) {
-      onSave(callsign.trim(), language);
+      onSave(callsign.trim(), language, voice);
     }
   };
 
@@ -59,6 +61,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-2">Select the language for ATC communications.</p>
+          </div>
+          
+          <div className="mb-6">
+            <label htmlFor="voice" className="block text-sm font-medium text-gray-300 mb-2">
+              Read-back Voice
+            </label>
+            <select
+              id="voice"
+              value={voice}
+              onChange={(e) => setVoice(e.target.value as VoiceName)}
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              {Object.entries(AVAILABLE_VOICES).map(([code, name]) => (
+                <option key={code} value={code}>{name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-2">Select the voice for the AI pilot's read-back.</p>
           </div>
 
           <div className="flex justify-end space-x-4">
