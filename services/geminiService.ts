@@ -117,13 +117,20 @@ export const generateReadback = async (transcription: string, callsign: string, 
 export const extractCallsign = async (transcription: string, language: LanguageCode, history: ConversationEntry[]): Promise<string | null> => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const languageName = SUPPORTED_LANGUAGES[language];
-    const prompt = `
-      Analyze the following Air Traffic Control (ATC) transcription in ${languageName}.
-      Your task is to identify and extract the full aircraft callsign.
-      - The callsign should be returned in phonetic alphabet format, with words separated by hyphens (e.g., "November-One-Two-Three-Alpha-Bravo", "Skywest-Three-Four-Five").
-      - If a clear aircraft callsign is present, extract it. Use the recent history to confirm if possible.
-      - If no callsign is mentioned, or if it's ambiguous, return null.
-  
+    const prompt = `You are an expert aviation communications analyst. Your task is to analyze the following Air Traffic Control (ATC) transcription in ${languageName} and extract the aircraft callsign with high accuracy.
+
+      **Analysis Guidelines:**
+      1.  **Identify the Callsign:** Look for any mention of an aircraft callsign. This could be a full callsign, a partial callsign, or an airline identifier.
+      2.  **Handle Variations:** Be prepared for common variations:
+          *   **Mixed Numerics/Phonetics:** The callsign might be spoken with digits instead of phonetic words (e.g., "November 123 Alpha Bravo" instead of "November One Two Three Alpha Bravo").
+          *   **Abbreviations:** An established callsign might be abbreviated later in a conversation (e.g., "November Alpha Bravo" for "November-One-Two-Three-Alpha-Bravo"). Use the communication history to identify these.
+          *   **Airline Callsigns:** Recognize airline names like "Skywest", "Delta", "United".
+      3.  **Standardize the Output:** Regardless of how the callsign is spoken, you **MUST** convert it to the standard ICAO phonetic alphabet format, with words separated by hyphens.
+          *   Example Input: "N123AB" -> Output: "November-One-Two-Three-Alpha-Bravo"
+          *   Example Input: "Skywest 345" -> Output: "Skywest-Three-Four-Five"
+      4.  **Use Context:** Refer to the "Recent Communication History" to resolve ambiguities or confirm partial callsigns. If a callsign was "Skyhawk 123AB" before, and now you hear "Skyhawk 3AB", you can confidently identify it.
+      5.  **Return Null if Ambiguous:** If no callsign is clearly identifiable, or if it is too ambiguous to determine, return null.
+
       **Recent Communication History (for context):**
       ${formatHistoryForPrompt(history)}
 
@@ -285,6 +292,7 @@ export const connectToLive = (
   language: LanguageCode
 ) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const languageName = SUPPORTED_LANGUAGES[language];
     return ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
@@ -311,7 +319,7 @@ export const connectToLive = (
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
             },
-            systemInstruction: 'You are an expert Air Traffic Control radio transcriber. Your sole function is to accurately transcribe ATC communications. Do not generate conversational responses.',
+            systemInstruction: `You are an expert Air Traffic Control radio transcriber. Your sole function is to accurately transcribe ATC communications in ${languageName}. Do not generate conversational responses.`,
         },
     });
 };

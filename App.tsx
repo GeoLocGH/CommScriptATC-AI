@@ -14,7 +14,7 @@ import InfoIcon from './components/icons/InfoIcon';
 import SettingsIcon from './components/icons/SettingsIcon';
 import SettingsModal from './components/SettingsModal';
 
-const ATC_INSTRUCTION_END_TIMEOUT = 1500; // ms of silence to detect end of instruction
+const ATC_INSTRUCTION_END_TIMEOUT = 2500; // ms of silence to detect end of instruction
 
 function encode(bytes: Uint8Array): string {
     let binary = '';
@@ -61,8 +61,6 @@ const App: React.FC = () => {
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   
-  // Ref to hold the transcription of the current utterance (interim or final)
-  const currentUtteranceRef = useRef('');
   // Ref to accumulate all finalized utterances within a single listening session
   const finalizedTranscriptRef = useRef('');
   const lastConfidenceRef = useRef<number | undefined>(undefined);
@@ -282,6 +280,7 @@ const App: React.FC = () => {
       }
       
       setInterimTranscription('');
+      finalizedTranscriptRef.current = '';
       setMicVolume(0);
 
       if (status !== AppStatus.IDLE) {
@@ -301,7 +300,6 @@ const App: React.FC = () => {
     setErrorMessage(null);
     
     finalizedTranscriptRef.current = '';
-    currentUtteranceRef.current = '';
     setRecordedAudioUrl(null);
     recordedChunksRef.current = [];
 
@@ -326,15 +324,15 @@ const App: React.FC = () => {
         }
         
         lastConfidenceRef.current = confidence;
-        currentUtteranceRef.current = text;
         
+        const currentDisplay = finalizedTranscriptRef.current 
+            ? `${finalizedTranscriptRef.current} ${text}`
+            : text;
+            
+        setInterimTranscription(currentDisplay.trim());
+      
         if (isFinal) {
-            if (currentUtteranceRef.current.trim().length > 0) {
-                finalizedTranscriptRef.current = finalizedTranscriptRef.current 
-                    ? `${finalizedTranscriptRef.current} ${currentUtteranceRef.current.trim()}`
-                    : currentUtteranceRef.current.trim();
-            }
-            currentUtteranceRef.current = ''; // Reset for next utterance
+            finalizedTranscriptRef.current = currentDisplay.trim();
 
             if (finalizedTranscriptRef.current.trim().length > 0) {
                  silenceTimerRef.current = window.setTimeout(() => {
@@ -342,12 +340,6 @@ const App: React.FC = () => {
                 }, ATC_INSTRUCTION_END_TIMEOUT);
             }
         }
-        
-        const currentDisplay = finalizedTranscriptRef.current 
-            ? `${finalizedTranscriptRef.current} ${currentUtteranceRef.current}`
-            : currentUtteranceRef.current;
-            
-        setInterimTranscription(currentDisplay.trim());
       };
       const onError = (error: any) => {
         console.error("Live connection error", error);
@@ -371,31 +363,16 @@ const App: React.FC = () => {
       sessionPromiseRef.current = connectToLive(onTranscriptionUpdate, onError, language);
       const geminiMicSource = audioContext.createMediaStreamSource(mediaStreamRef.current);
       
-      const noiseGate = audioContext.createDynamicsCompressor();
-      noiseGate.threshold.setValueAtTime(-50, audioContext.currentTime);
-      noiseGate.knee.setValueAtTime(40, audioContext.currentTime);
-      noiseGate.ratio.setValueAtTime(12, audioContext.currentTime);
-      noiseGate.attack.setValueAtTime(0, audioContext.currentTime);
-      noiseGate.release.setValueAtTime(0.25, audioContext.currentTime);
-
       const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
       scriptProcessorRef.current = scriptProcessor;
 
+      // Setup for recording the user's microphone audio for download.
       // @ts-ignore
       recordingContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const recContext = recordingContextRef.current;
       const recordingMicSource = recContext.createMediaStreamSource(mediaStreamRef.current);
       recordingDestinationNodeRef.current = recContext.createMediaStreamDestination();
-      
-      const recordingNoiseGate = recContext.createDynamicsCompressor();
-      recordingNoiseGate.threshold.setValueAtTime(-50, recContext.currentTime);
-      recordingNoiseGate.knee.setValueAtTime(40, recContext.currentTime);
-      recordingNoiseGate.ratio.setValueAtTime(12, recContext.currentTime);
-      recordingNoiseGate.attack.setValueAtTime(0, recContext.currentTime);
-      recordingNoiseGate.release.setValueAtTime(0.25, recContext.currentTime);
-      
-      recordingMicSource.connect(recordingNoiseGate);
-      recordingNoiseGate.connect(recordingDestinationNodeRef.current);
+      recordingMicSource.connect(recordingDestinationNodeRef.current);
 
       const mimeType = 'audio/webm';
       mediaRecorderRef.current = new MediaRecorder(recordingDestinationNodeRef.current.stream, { mimeType });
@@ -440,8 +417,8 @@ const App: React.FC = () => {
         }
       };
       
-      geminiMicSource.connect(noiseGate);
-      noiseGate.connect(scriptProcessor);
+      // Connect the simplified audio graph: Mic -> Processor -> Gemini
+      geminiMicSource.connect(scriptProcessor);
       scriptProcessor.connect(audioContext.destination);
 
     } catch (error) {
@@ -455,20 +432,16 @@ const App: React.FC = () => {
     if (status === AppStatus.IDLE || status === AppStatus.ERROR) {
       await startListening();
     } else {
-      // User manually stops. This should immediately process whatever has been transcribed.
+      // User manually stops.
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
-      // Append any lingering interim text to the final transcript before processing.
-      if(currentUtteranceRef.current.trim().length > 0) {
-           finalizedTranscriptRef.current = finalizedTranscriptRef.current 
-                  ? `${finalizedTranscriptRef.current} ${currentUtteranceRef.current.trim()}`
-                  : currentUtteranceRef.current.trim();
-      }
+      // The most up-to-date transcript is in the state. Commit it before processing.
+      finalizedTranscriptRef.current = interimTranscription;
       await processAndStop();
     }
-  }, [status, startListening, processAndStop]);
+  }, [status, startListening, processAndStop, interimTranscription]);
 
   const handleRegenerateReadback = useCallback(async () => {
     const originalStatus = status;
@@ -521,9 +494,7 @@ const App: React.FC = () => {
   
   const handleClearTranscription = useCallback(() => {
     if (status !== AppStatus.LISTENING) return;
-    
     setInterimTranscription('');
-    currentUtteranceRef.current = '';
     finalizedTranscriptRef.current = '';
   }, [status]);
 

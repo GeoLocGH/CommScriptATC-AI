@@ -23,6 +23,8 @@ interface ControlPanelProps {
   errorMessage?: string | null;
 }
 
+const SQUELCH_THRESHOLD = 0.01; // Below this RMS volume, show squelch effect
+
 const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage }) => {
   const isListening = status !== AppStatus.IDLE && status !== AppStatus.ERROR;
 
@@ -67,7 +69,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, 
         )}
         <p className={`text-lg font-medium ${statusColor}`}>{getStatusText()}</p>
       </div>
-      <MicVisualizer volume={micVolume} />
+      <MicVisualizer volume={micVolume} isSquelched={micVolume < SQUELCH_THRESHOLD && status === AppStatus.LISTENING} />
       <button
         onClick={onToggleListening}
         className={`my-2 flex items-center justify-center w-24 h-24 rounded-full text-white transition-all duration-300 ease-in-out shadow-2xl focus:outline-none focus:ring-4 focus:ring-opacity-50 ${buttonBgColor} ${isListening ? 'focus:ring-red-500' : 'focus:ring-blue-500'}`}
