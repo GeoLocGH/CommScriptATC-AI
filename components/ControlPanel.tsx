@@ -26,18 +26,23 @@ interface ControlPanelProps {
   onSquawkCodeChange: (code: string) => void;
   onSquawkSubmit: () => void;
   isSquawkDisabled: boolean;
+  speakingContent?: string;
 }
 
 const SQUELCH_THRESHOLD = 0.01; // Below this RMS volume, show squelch effect
 
-const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage, isTrainingMode, squawkCode, onSquawkCodeChange, onSquawkSubmit, isSquawkDisabled }) => {
+const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, onRegenerateReadback, onClearTranscription, isRegenerateDisabled, micVolume, recordedAudioUrl, callsign, errorMessage, isTrainingMode, squawkCode, onSquawkCodeChange, onSquawkSubmit, isSquawkDisabled, speakingContent }) => {
   const isListening = status === AppStatus.LISTENING;
   
   const getStatusText = () => {
+    if (status === AppStatus.SPEAKING && speakingContent) {
+        return speakingContent;
+    }
+
     if (isTrainingMode) {
       switch (status) {
         case AppStatus.SPEAKING:
-          return 'Playing ATC instruction...';
+          return 'Playing Audio...';
         case AppStatus.LISTENING:
           return 'Listening for your read-back...';
         case AppStatus.IDLE:
@@ -57,7 +62,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ status, onToggleListening, 
       case AppStatus.CHECKING_ACCURACY:
         return 'Checking Accuracy...';
       case AppStatus.SPEAKING:
-        return 'Speaking Read-back...';
+        return 'Speaking...';
       case AppStatus.ERROR:
         return errorMessage || 'An error occurred. Please try again.';
       case AppStatus.IDLE:

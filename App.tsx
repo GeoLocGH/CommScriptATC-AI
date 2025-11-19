@@ -112,6 +112,7 @@ const App: React.FC = () => {
   const [atcVoice, setAtcVoice] = useState<AtcVoiceName>('Fenrir');
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>('1.0');
   const [accuracyThreshold, setAccuracyThreshold] = useState(90);
+  const [diversityMode, setDiversityMode] = useState(false);
   const [isApiKeyReady, setIsApiKeyReady] = useState(false);
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -128,6 +129,7 @@ const App: React.FC = () => {
   const [detectedCallsign, setDetectedCallsign] = useState<string | null>(null);
   const [showPhoneticGuide, setShowPhoneticGuide] = useState(false);
   const [squawkCodeInput, setSquawkCodeInput] = useState('');
+  const [speakingContent, setSpeakingContent] = useState<string>(''); // Track what TTS is speaking
 
   // Using `any` for LiveSession as it is not an exported member of the SDK.
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -179,6 +181,10 @@ const App: React.FC = () => {
     const savedAccuracyThreshold = localStorage.getItem('atc-copilot-accuracy-threshold');
     if (savedAccuracyThreshold) {
         setAccuracyThreshold(parseInt(savedAccuracyThreshold, 10));
+    }
+    const savedDiversityMode = localStorage.getItem('atc-copilot-diversity-mode');
+    if (savedDiversityMode === 'true') {
+        setDiversityMode(true);
     }
 
     const checkApiKey = async () => {
@@ -268,20 +274,55 @@ const App: React.FC = () => {
       confidence: lastConfidenceRef.current,
     };
     
-    const feedback = await checkReadbackAccuracy(
-      currentScenario.atcInstruction,
-      userTranscription,
-      language,
-      conversationLogRef.current, // Pass current history
-      currentScenario.expectedReadback
-    );
+    try {
+        const feedback = await checkReadbackAccuracy(
+          currentScenario.atcInstruction,
+          userTranscription,
+          language,
+          conversationLogRef.current, // Pass current history
+          currentScenario.expectedReadback,
+          diversityMode
+        );
 
-    userEntry.feedback = feedback;
-    setConversationLog(prev => [...prev, userEntry]);
+        userEntry.feedback = feedback;
+        setConversationLog(prev => [...prev, userEntry]);
 
-    setStatus(AppStatus.IDLE);
+        // Vocalize the CFI Feedback
+        setStatus(AppStatus.SPEAKING);
+        setSpeakingContent('Playing instructor feedback...');
+        const feedbackText = feedback.accuracy === 'CORRECT' 
+            ? "Correct read-back." 
+            : `Incorrect. ${feedback.feedbackSummary}`;
+
+        const audioBytes = await generateSpeech(feedbackText, atcVoice); // Use ATC voice as Instructor voice
+        if (audioBytes) {
+             // @ts-ignore
+            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
+            const source = playbackContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(playbackContext.destination);
+            source.start();
+            source.onended = () => {
+                playbackContext.close();
+                setStatus(AppStatus.IDLE);
+                setSpeakingContent('');
+            };
+        } else {
+            setStatus(AppStatus.IDLE);
+            setSpeakingContent('');
+        }
+
+    } catch (e) {
+        console.error("Error processing user readback:", e);
+        userEntry.text += " (Analysis Failed)";
+        setConversationLog(prev => [...prev, userEntry]);
+        setErrorMessage("Failed to analyze read-back. Please try again.");
+        setStatus(AppStatus.IDLE);
+    }
+
     // After feedback, the training turn is over. The user can retry or exit.
-  }, [currentScenario, language]);
+  }, [currentScenario, language, diversityMode, atcVoice]);
 
   const processTranscription = useCallback(async (transcription: string, confidence?: number) => {
     setStatus(AppStatus.THINKING);
@@ -297,51 +338,63 @@ const App: React.FC = () => {
 
     const logWithAtc = await getUpdatedLogWithAtc;
     
-    const detected = await extractCallsign(transcription, language, logWithAtc);
-    let activeCallsign = callsign;
-    if (detected && detected !== callsign) {
-      setDetectedCallsign(detected); // Show banner
-      activeCallsign = detected; // Use for this read-back immediately
+    try {
+        const detected = await extractCallsign(transcription, language, logWithAtc);
+        let activeCallsign = callsign;
+        if (detected && detected !== callsign) {
+          setDetectedCallsign(detected); // Show banner
+          activeCallsign = detected; // Use for this read-back immediately
+        }
+        
+        const { primary: readbackText, alternatives, confidence: readbackConfidence } = await generateReadback(transcription, activeCallsign, language, logWithAtc);
+
+        setStatus(AppStatus.CHECKING_ACCURACY);
+        const feedback = await checkReadbackAccuracy(transcription, readbackText, language, logWithAtc, undefined, diversityMode);
+
+        const pilotEntry: ConversationEntry = { speaker: 'PILOT', text: readbackText, feedback, alternatives, confidence: readbackConfidence };
+        setConversationLog(prev => [...prev, pilotEntry]);
+        
+        if (feedback.accuracy === 'CORRECT') {
+          setStatus(AppStatus.SPEAKING);
+          setSpeakingContent('Speaking Read-back...');
+          const audioBytes = await generateSpeech(readbackText, voice);
+          if (audioBytes) {
+            return new Promise<void>(async (resolve) => {
+                // @ts-ignore
+                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
+                const source = playbackContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(playbackContext.destination);
+
+                const recContext = recordingContextRef.current;
+                const recDest = recordingDestinationNodeRef.current;
+                if (recContext && recDest) {
+                    const ttsStreamDest = playbackContext.createMediaStreamDestination();
+                    source.connect(ttsStreamDest);
+                    const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
+                    ttsRecordingSource.connect(recDest);
+                }
+
+                source.start();
+                source.onended = () => {
+                  playbackContext.close();
+                  setSpeakingContent('');
+                  resolve();
+                };
+            });
+          } else {
+             console.warn("TTS generation failed for readback");
+             setErrorMessage("Audio generation failed, but text read-back is available.");
+             // Clear non-critical error after a delay
+             setTimeout(() => setErrorMessage(null), 4000);
+          }
+        }
+    } catch (error) {
+        console.error("Error processing transcription pipeline:", error);
+        setErrorMessage("An error occurred while processing the ATC instruction.");
     }
-    
-    const { primary: readbackText, alternatives, confidence: readbackConfidence } = await generateReadback(transcription, activeCallsign, language, logWithAtc);
-
-    setStatus(AppStatus.CHECKING_ACCURACY);
-    const feedback = await checkReadbackAccuracy(transcription, readbackText, language, logWithAtc);
-
-    const pilotEntry: ConversationEntry = { speaker: 'PILOT', text: readbackText, feedback, alternatives, confidence: readbackConfidence };
-    setConversationLog(prev => [...prev, pilotEntry]);
-    
-    if (feedback.accuracy === 'CORRECT') {
-      setStatus(AppStatus.SPEAKING);
-      const audioBytes = await generateSpeech(readbackText, voice);
-      if (audioBytes) {
-        return new Promise<void>(async (resolve) => {
-            // @ts-ignore
-            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-            const source = playbackContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(playbackContext.destination);
-
-            const recContext = recordingContextRef.current;
-            const recDest = recordingDestinationNodeRef.current;
-            if (recContext && recDest) {
-                const ttsStreamDest = playbackContext.createMediaStreamDestination();
-                source.connect(ttsStreamDest);
-                const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
-                ttsRecordingSource.connect(recDest);
-            }
-
-            source.start();
-            source.onended = () => {
-              playbackContext.close();
-              resolve();
-            };
-        });
-      }
-    }
-  }, [callsign, language, voice]);
+  }, [callsign, language, voice, diversityMode]);
 
   const processAndStop = useCallback(async () => {
     const transcriptionToProcess = finalizedTranscriptRef.current.trim();
@@ -373,13 +426,13 @@ const App: React.FC = () => {
       }
     }
     
-    // In training mode, stay IDLE to allow another attempt.
+    // In training mode, stay IDLE (or SPEAKING due to TTS in processUserReadback) to allow another attempt.
     // In normal mode, finish the session.
     if (!isTrainingMode) {
       setStatus(AppStatus.IDLE);
       saveCurrentSession();
     } else {
-      setStatus(AppStatus.IDLE);
+      // processUserReadback handles setting status to SPEAKING/IDLE
     }
   }, [cleanupAudio, processTranscription, saveCurrentSession, isTrainingMode, processUserReadback]);
 
@@ -406,6 +459,7 @@ const App: React.FC = () => {
 
       if (status !== AppStatus.IDLE) {
          setStatus(AppStatus.IDLE);
+         setSpeakingContent('');
          if (saveSession && !isTrainingMode) {
             saveCurrentSession();
          }
@@ -461,24 +515,29 @@ const App: React.FC = () => {
       const onError = (error: any) => {
         console.error("Live connection error", error);
         let userMessage = 'An unexpected error occurred. Please try again.';
+        const errStr = error.message || String(error);
 
-        if (error.message && (
-            error.message.includes("API key not valid") ||
-            error.message.includes("permission to access") ||
-            error.message.includes("Requested entity was not found") ||
-            error.message.includes("Request contains an invalid argument")
-        )) {
-            userMessage = 'Your API key may be invalid or lack necessary permissions. Please select a different key.';
-            setIsApiKeyReady(false);
-        } else if (error.message && error.message.includes("Network error")) {
-            userMessage = 'A network error occurred. Please check your connection and try again.';
+        if (errStr.includes("API key") || errStr.includes("401")) {
+            userMessage = 'Authentication failed. Please verify your API key in settings.';
+            setIsApiKeyReady(false); // Force re-entry
+        } else if (errStr.includes("permission") || errStr.includes("Permission")) {
+             userMessage = 'Microphone permission denied. Please allow access in your browser settings.';
+        } else if (errStr.includes("429") || errStr.includes("Resource has been exhausted")) {
+             userMessage = 'API Usage Limit Exceeded. Please wait a moment or check your billing/quota.';
+        } else if (errStr.includes("503") || errStr.includes("Service Unavailable")) {
+             userMessage = 'The AI service is temporarily unavailable. Please try again in a few seconds.';
+        } else if (errStr.includes("Network") || errStr.includes("Failed to fetch")) {
+             userMessage = 'Network connection lost. Please check your internet connection.';
+        } else if (errStr.includes("AudioContext")) {
+             userMessage = 'Audio system error. Please refresh the page.';
         }
+        
         setErrorMessage(userMessage);
         setStatus(AppStatus.ERROR);
         stopListening(false);
       };
 
-      sessionPromiseRef.current = connectToLive(onInterimTranscription, onFinalTranscription, onError, language, isTrainingMode ? 'pilot' : 'atc');
+      sessionPromiseRef.current = connectToLive(onInterimTranscription, onFinalTranscription, onError, language, isTrainingMode ? 'pilot' : 'atc', diversityMode);
       const geminiMicSource = audioContext.createMediaStreamSource(mediaStreamRef.current);
       
       const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -496,7 +555,8 @@ const App: React.FC = () => {
         const mimeType = 'audio/webm';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
              console.error(`${mimeType} is not supported on this browser.`);
-             // Handle cases where even webm is not supported, though this is rare.
+             setErrorMessage(`Audio recording is not supported in this browser. Please use Chrome, Edge, or Firefox.`);
+             setStatus(AppStatus.ERROR);
              return;
         }
 
@@ -525,7 +585,7 @@ const App: React.FC = () => {
                 // Fallback: offer the webm file if conversion fails
                 const url = URL.createObjectURL(webmBlob);
                 setRecordedAudioUrl(url);
-                alert("Could not convert audio to WAV, providing raw WEBM file instead. The downloaded file will have a .wav extension but may need to be renamed to .webm to play correctly.");
+                // alert("Could not convert audio to WAV, providing raw WEBM file instead. The downloaded file will have a .wav extension but may need to be renamed to .webm to play correctly.");
             }
         };
         mediaRecorderRef.current.start();
@@ -562,12 +622,20 @@ const App: React.FC = () => {
       geminiMicSource.connect(scriptProcessor);
       scriptProcessor.connect(audioContext.destination);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to start microphone:", error);
-      setErrorMessage('Could not access microphone. Please check permissions and try again.');
+      let msg = 'Could not access microphone. Please check permissions and try again.';
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+          msg = 'Microphone access denied. Please click the lock icon in your address bar to allow permissions.';
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+          msg = 'No microphone found. Please ensure a microphone is connected.';
+      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+          msg = 'Microphone is busy or has a hardware error. Try restarting your browser.';
+      }
+      setErrorMessage(msg);
       setStatus(AppStatus.ERROR);
     }
-  }, [status, isReviewing, language, processAndStop, stopListening, isTrainingMode]);
+  }, [status, isReviewing, language, processAndStop, stopListening, isTrainingMode, diversityMode]);
 
   const handleToggleListening = useCallback(async () => {
     if (status === AppStatus.IDLE || status === AppStatus.ERROR) {
@@ -587,39 +655,51 @@ const App: React.FC = () => {
     setConversationLog(prev => prev.slice(0, lastAtcEntryIndex + 1));
     
     setStatus(AppStatus.THINKING);
-    const { primary: readbackText, alternatives, confidence: readbackConfidence } = await generateReadback(lastAtcEntry.text, callsign, language, historyForRegen);
-    
-    setStatus(AppStatus.CHECKING_ACCURACY);
-    const feedback = await checkReadbackAccuracy(lastAtcEntry.text, readbackText, language, historyForRegen);
-    
-    const pilotEntry = { speaker: 'PILOT' as const, text: readbackText, feedback, alternatives, confidence: readbackConfidence };
-    setConversationLog(prev => [...prev, pilotEntry]);
-    
-    if (feedback.accuracy === 'CORRECT') {
-        setStatus(AppStatus.SPEAKING);
-        const audioBytes = await generateSpeech(readbackText, voice);
-        if (audioBytes) {
-            // @ts-ignore
-            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-            const source = playbackContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(playbackContext.destination);
-            source.start();
-            source.onended = () => {
-                playbackContext.close();
+    try {
+        const { primary: readbackText, alternatives, confidence: readbackConfidence } = await generateReadback(lastAtcEntry.text, callsign, language, historyForRegen);
+        
+        setStatus(AppStatus.CHECKING_ACCURACY);
+        const feedback = await checkReadbackAccuracy(lastAtcEntry.text, readbackText, language, historyForRegen, undefined, diversityMode);
+        
+        const pilotEntry = { speaker: 'PILOT' as const, text: readbackText, feedback, alternatives, confidence: readbackConfidence };
+        setConversationLog(prev => [...prev, pilotEntry]);
+        
+        if (feedback.accuracy === 'CORRECT') {
+            setStatus(AppStatus.SPEAKING);
+            setSpeakingContent('Speaking Read-back...');
+            const audioBytes = await generateSpeech(readbackText, voice);
+            if (audioBytes) {
+                // @ts-ignore
+                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
+                const source = playbackContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(playbackContext.destination);
+                source.start();
+                source.onended = () => {
+                    playbackContext.close();
+                    setStatus(AppStatus.IDLE);
+                    setSpeakingContent('');
+                    saveCurrentSession();
+                };
+            } else {
                 setStatus(AppStatus.IDLE);
+                setSpeakingContent('');
                 saveCurrentSession();
-            };
+                setErrorMessage("Audio generation failed for regenerated read-back.");
+                setTimeout(() => setErrorMessage(null), 3000);
+            }
         } else {
             setStatus(AppStatus.IDLE);
+            setSpeakingContent('');
             saveCurrentSession();
         }
-    } else {
-        setStatus(AppStatus.IDLE);
-        saveCurrentSession();
+    } catch (e) {
+        console.error("Error regenerating readback:", e);
+        setStatus(AppStatus.ERROR);
+        setErrorMessage("Failed to regenerate read-back. Please try again.");
     }
-  }, [conversationLog, callsign, language, voice, saveCurrentSession]);
+  }, [conversationLog, callsign, language, voice, saveCurrentSession, diversityMode]);
   
   const handleClearTranscription = useCallback(() => {
     if (status !== AppStatus.LISTENING) return;
@@ -695,7 +775,7 @@ const App: React.FC = () => {
     setShowOnboarding(false);
   };
 
-  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number) => {
+  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean) => {
     setCallsign(newCallsign);
     localStorage.setItem('atc-copilot-callsign', newCallsign);
     setLanguage(newLanguage);
@@ -708,6 +788,8 @@ const App: React.FC = () => {
     localStorage.setItem('atc-copilot-playback-speed', newPlaybackSpeed);
     setAccuracyThreshold(newAccuracyThreshold);
     localStorage.setItem('atc-copilot-accuracy-threshold', newAccuracyThreshold.toString());
+    setDiversityMode(newDiversityMode);
+    localStorage.setItem('atc-copilot-diversity-mode', String(newDiversityMode));
     setShowSettings(false);
   };
   
@@ -718,6 +800,7 @@ const App: React.FC = () => {
     setCurrentScenario(scenario);
     setShowTrainingModal(false);
     setStatus(AppStatus.SPEAKING);
+    setSpeakingContent('Playing ATC instruction...');
 
     const atcEntry: ConversationEntry = { speaker: 'ATC', text: scenario.atcInstruction };
     setConversationLog([atcEntry]);
@@ -735,9 +818,13 @@ const App: React.FC = () => {
         source.onended = () => {
           playbackContext.close();
           setStatus(AppStatus.IDLE); // Ready for user to speak
+          setSpeakingContent('');
         };
     } else {
         setStatus(AppStatus.IDLE);
+        setSpeakingContent('');
+        setErrorMessage("Could not play ATC instruction audio.");
+        setTimeout(() => setErrorMessage(null), 3000);
     }
   }, [handleNewSession, playbackSpeed, atcVoice]);
 
@@ -786,24 +873,52 @@ const App: React.FC = () => {
 
     setStatus(AppStatus.THINKING);
 
-    const atcInstruction = `Squawk ${squawkCodeInput}.`;
+    // Include callsign for realism
+    const atcInstruction = `${callsign}, Squawk ${squawkCodeInput}.`;
     const atcEntry: ConversationEntry = { speaker: 'ATC', text: atcInstruction };
 
+    // Optimistic update for ATC text
     const logWithAtc = [...conversationLogRef.current, atcEntry];
     setConversationLog(logWithAtc);
 
     try {
+        // 1. Speak ATC Instruction
+        setStatus(AppStatus.SPEAKING);
+        setSpeakingContent('Playing ATC instruction...');
+        const atcAudioBytes = await generateSpeech(atcInstruction, atcVoice);
+
+        if (atcAudioBytes) {
+            await new Promise<void>(async (resolve) => {
+                // @ts-ignore
+                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                const audioBuffer = await decodeAudioData(atcAudioBytes, playbackContext, 24000, 1);
+                const source = playbackContext.createBufferSource();
+                source.buffer = audioBuffer;
+                // Use training speed setting? Or normal? Prompt says "training mode", implies training speed.
+                source.playbackRate.value = parseFloat(playbackSpeed);
+                source.connect(playbackContext.destination);
+                source.start();
+                source.onended = () => {
+                    playbackContext.close();
+                    resolve();
+                };
+            });
+        }
+
+        setStatus(AppStatus.THINKING);
         const { primary: readbackText, alternatives, confidence: readbackConfidence } = await generateReadback(atcInstruction, callsign, language, logWithAtc);
 
         const pilotEntry: ConversationEntry = { speaker: 'PILOT', text: readbackText, alternatives, confidence: readbackConfidence };
         setConversationLog(prev => [...prev, pilotEntry]);
         
         setStatus(AppStatus.SPEAKING);
-        const audioBytes = await generateSpeech(readbackText, voice);
-        if (audioBytes) {
+        setSpeakingContent('Speaking Read-back...');
+        const pilotAudioBytes = await generateSpeech(readbackText, voice);
+        
+        if (pilotAudioBytes) {
              // @ts-ignore
             const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
+            const audioBuffer = await decodeAudioData(pilotAudioBytes, playbackContext, 24000, 1);
             const source = playbackContext.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(playbackContext.destination);
@@ -811,18 +926,20 @@ const App: React.FC = () => {
             source.onended = () => {
                 playbackContext.close();
                 setStatus(AppStatus.IDLE);
+                setSpeakingContent('');
             };
         } else {
             setStatus(AppStatus.IDLE);
+            setSpeakingContent('');
         }
     } catch (e) {
         console.error("Error during squawk submission:", e);
         setErrorMessage("Failed to process squawk code.");
         setStatus(AppStatus.ERROR);
     } finally {
-        setSquawkCodeInput(''); // Clear the input after submission
+        setSquawkCodeInput('');
     }
-  }, [squawkCodeInput, callsign, language, voice]);
+  }, [squawkCodeInput, callsign, language, voice, atcVoice, playbackSpeed]);
 
 
   useEffect(() => {
@@ -853,6 +970,7 @@ const App: React.FC = () => {
         currentAtcVoice={atcVoice}
         currentPlaybackSpeed={playbackSpeed}
         currentAccuracyThreshold={accuracyThreshold}
+        currentDiversityMode={diversityMode}
         onSave={handleSaveSettings} 
         onClose={() => setShowSettings(false)} 
        />}
@@ -916,6 +1034,7 @@ const App: React.FC = () => {
              onSquawkCodeChange={setSquawkCodeInput}
              onSquawkSubmit={handleSquawkSubmit}
              isSquawkDisabled={isBusy}
+             speakingContent={speakingContent}
             />
            <SessionHistory 
              sessions={savedSessions} 

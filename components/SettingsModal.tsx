@@ -8,22 +8,24 @@ interface SettingsModalProps {
   currentAtcVoice: AtcVoiceName;
   currentPlaybackSpeed: PlaybackSpeed;
   currentAccuracyThreshold: number;
-  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number) => void;
+  currentDiversityMode: boolean;
+  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean) => void;
   onClose: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, currentAtcVoice, currentPlaybackSpeed, currentAccuracyThreshold, onSave, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, currentAtcVoice, currentPlaybackSpeed, currentAccuracyThreshold, currentDiversityMode, onSave, onClose }) => {
   const [callsign, setCallsign] = useState(currentCallsign);
   const [language, setLanguage] = useState<LanguageCode>(currentLanguage);
   const [voice, setVoice] = useState<PilotVoiceName>(currentVoice);
   const [atcVoice, setAtcVoice] = useState<AtcVoiceName>(currentAtcVoice);
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(currentPlaybackSpeed);
   const [accuracyThreshold, setAccuracyThreshold] = useState(currentAccuracyThreshold);
+  const [diversityMode, setDiversityMode] = useState(currentDiversityMode);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (callsign.trim()) {
-      onSave(callsign.trim(), language, voice, atcVoice, playbackSpeed, accuracyThreshold);
+      onSave(callsign.trim(), language, voice, atcVoice, playbackSpeed, accuracyThreshold, diversityMode);
     }
   };
 
@@ -115,7 +117,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
             </select>
           </div>
 
-          <div className="mb-6">
+          <div className="mb-4">
             <label htmlFor="accuracyThreshold" className="block text-xs font-medium text-gray-400 mb-1">
               Accuracy Threshold
             </label>
@@ -132,6 +134,33 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
               />
               <span className="text-sm font-bold text-cyan-400 w-10 text-right">{accuracyThreshold}%</span>
             </div>
+          </div>
+
+          <div className="mb-6">
+             <div className="flex items-center justify-between">
+                <label htmlFor="diversityMode" className="text-xs font-medium text-gray-400">
+                  Enhanced Accent Support
+                </label>
+                <button
+                  type="button"
+                  id="diversityMode"
+                  role="switch"
+                  aria-checked={diversityMode}
+                  onClick={() => setDiversityMode(!diversityMode)}
+                  className={`${
+                    diversityMode ? 'bg-blue-600' : 'bg-gray-700'
+                  } relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800`}
+                >
+                  <span
+                    className={`${
+                      diversityMode ? 'translate-x-5' : 'translate-x-1'
+                    } inline-block h-3 w-3 transform rounded-full bg-white transition-transform`}
+                  />
+                </button>
+             </div>
+             <p className="text-[10px] text-gray-500 mt-1">
+               Improves recognition for diverse accents and prioritizes intent over strict pronunciation.
+             </p>
           </div>
 
           <div className="flex justify-end space-x-3">

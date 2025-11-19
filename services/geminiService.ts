@@ -1,5 +1,4 @@
-// Fix: Remove LiveSession from import as it is not an exported member.
-import { GoogleGenAI, Modality, Type, LiveServerMessage } from "@google/genai";
+import { GoogleGenAI, Modality, Type, LiveServerMessage, SchemaType } from "@google/genai";
 import { ReadbackFeedback, LanguageCode, SUPPORTED_LANGUAGES, PilotVoiceName, AtcVoiceName, ConversationEntry } from "../types";
 
 // --- Audio Decoding/Encoding Helpers ---
@@ -36,361 +35,300 @@ export async function decodeAudioData(
 const getApiKey = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("API_KEY environment variable not set");
+    console.error("API_KEY is missing in process.env");
+    throw new Error("API_KEY is missing");
   }
   return apiKey;
 };
 
-const formatHistoryForPrompt = (history: ConversationEntry[]): string => {
-    if (!history || history.length === 0) {
-        return "No recent communication history.";
-    }
-    // Take the last 4 entries to keep the context relevant and the prompt concise
-    return history
-        .slice(-4)
-        .map(entry => `${entry.speaker}: ${entry.text}`)
-        .join('\n');
-};
-
-// --- Gemini API Service ---
-
-export const generateReadback = async (transcription: string, callsign: string, language: LanguageCode, history: ConversationEntry[]): Promise<{ primary: string, alternatives: string[], confidence: number }> => {
+export async function generateReadback(
+  atcText: string, 
+  callsign: string, 
+  language: LanguageCode = 'en-US',
+  history: ConversationEntry[] = []
+): Promise<{ primary: string; alternatives: string[], confidence: number }> {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const languageName = SUPPORTED_LANGUAGES[language];
-  const prompt = `You are an expert pilot assistant responsible for generating accurate read-backs.
-  Given the following Air Traffic Control (ATC) instruction in ${languageName}, your task is to generate the most standard, correct pilot read-back, a few alternatives, and a confidence score.
-
-  **Recent Communication History (for context):**
-  ${formatHistoryForPrompt(history)}
-
-  **Instructions:**
-  1.  Generate a \`primary\` read-back. This should be the most common, by-the-book phraseology.
-  2.  Generate an array of \`alternatives\`. These should be other ways a pilot might correctly respond. If there are no common alternatives, provide an empty array.
-  3.  Generate a \`confidence\` score (a number between 0.0 and 1.0) representing your certainty that the primary read-back is the most standard and correct phraseology for the given instruction.
-  4.  Both the primary and alternative read-backs must include the aircraft callsign '${callsign}'.
-  5.  All responses must be in ${languageName}.
-
-  **Current ATC Instruction:**
-  "${transcription}"
-  `;
   
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-      primary: {
-        type: Type.STRING,
-        description: "The most standard, correct pilot read-back.",
-      },
-      alternatives: {
-        type: Type.ARRAY,
-        description: "An array of other common, correct alternative phraseologies.",
-        items: {
-          type: Type.STRING,
+  const historyText = history.map(h => `${h.speaker}: ${h.text}`).join('\n');
+
+  const prompt = `
+    You are an expert airline pilot.
+    Task: specific pilot read-back for the following ATC instruction.
+    Context History:
+    ${historyText}
+
+    Current ATC Instruction: "${atcText}"
+    Your Callsign: "${callsign}"
+    Language: ${SUPPORTED_LANGUAGES[language]}
+
+    Rules:
+    1. STRICTLY follow ICAO/FAA standard phraseology.
+    2. Include ONLY the read-back. No conversational filler.
+    3. End with the callsign.
+    4. If the instruction contains numbers (headings, altitudes, frequencies), they MUST be read back exactly.
+    5. If the instruction is a question or traffic advisory, answer appropriately.
+    6. Calculate a confidence score (0.0 to 1.0) representing your certainty that this is the correct standard phraseology.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          readback: { type: Type.STRING },
+          alternatives: { type: Type.ARRAY, items: { type: Type.STRING } },
+          confidence: { type: Type.NUMBER, description: "Confidence score between 0.0 and 1.0" }
         },
-      },
-      confidence: {
-        type: Type.NUMBER,
-        description: "A score from 0.0 to 1.0 indicating confidence in the primary read-back.",
+        required: ["readback", "alternatives", "confidence"]
       }
-    },
-    required: ['primary', 'alternatives', 'confidence'],
-  };
-
-  try {
-    const response = await ai.models.generateContent({
-      // Fix: Use recommended model for complex text tasks.
-      model: 'gemini-3-pro-preview',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        thinkingConfig: { thinkingBudget: 32768 }
-      },
-    });
-    
-    const result = JSON.parse(response.text);
-    return result;
-  } catch (error) {
-    console.error("Error generating readback:", error);
-    // Fallback in case of error
-    return {
-      primary: "Error: Could not generate readback.",
-      alternatives: [],
-      confidence: 0,
-    };
-  }
-};
-
-export const extractCallsign = async (transcription: string, language: LanguageCode, history: ConversationEntry[]): Promise<string | null> => {
-    const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const languageName = SUPPORTED_LANGUAGES[language];
-    const prompt = `You are an expert aviation communications analyst. Your task is to analyze the following Air Traffic Control (ATC) transcription in ${languageName} and extract the **AIRCRAFT** callsign with high accuracy.
-
-      **Analysis Guidelines:**
-      1.  **Identify the Aircraft Callsign:** Look for any mention of an aircraft callsign. This could be a full callsign, a partial callsign, or an airline identifier.
-      2.  **Differentiate from ATC Callsigns:** Your primary task is to find the **AIRCRAFT** callsign. ATC transmissions will contain their own callsign (e.g., 'Boston Tower', 'Logan Ground', 'KBOS Approach'). Do **NOT** extract these. Focus only on the identifier of the aircraft being addressed.
-      3.  **Handle Variations:** Be prepared for common variations:
-          *   **Mixed Numerics/Phonetics:** The callsign might be spoken with digits instead of phonetic words (e.g., "November 123 Alpha Bravo" instead of "November One Two Three Alpha Bravo").
-          *   **Abbreviations:** An established callsign might be abbreviated later in a conversation (e.g., "November Alpha Bravo" for "November-One-Two-Three-Alpha-Bravo"). Use the communication history to identify these.
-          *   **Airline Callsigns:** Recognize airline names like "Skywest", "Delta", "United".
-      4.  **Standardize the Output:** Regardless of how the callsign is spoken, you **MUST** convert it to the standard ICAO phonetic alphabet format, with words separated by hyphens.
-          *   Example Input: "N123AB" -> Output: "November-One-Two-Three-Alpha-Bravo"
-          *   Example Input: "Skywest 345" -> Output: "Skywest-Three-Four-Five"
-      5.  **Use Context:** Refer to the "Recent Communication History" to resolve ambiguities or confirm partial callsigns. If a callsign was "Skyhawk 123AB" before, and now you hear "Skyhawk 3AB", you can confidently identify it.
-      6.  **Return Null if Ambiguous:** If no aircraft callsign is clearly identifiable, or if it is too ambiguous to determine, return null.
-
-      **Recent Communication History (for context):**
-      ${formatHistoryForPrompt(history)}
-
-      **Current ATC Transcription:**
-      "${transcription}"
-    `;
-    
-    const responseSchema = {
-      type: Type.OBJECT,
-      properties: {
-          callsign: { 
-              type: Type.STRING, 
-              description: 'The extracted callsign in hyphenated phonetic format, or null if not found.',
-          }
-      },
-      required: ['callsign'],
-    };
-  
-    try {
-      const response = await ai.models.generateContent({
-        // Fix: Use recommended model for complex text tasks.
-        model: 'gemini-3-pro-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: responseSchema,
-          temperature: 0.0,
-        },
-      });
-      
-      const result = JSON.parse(response.text);
-      // The schema returns a JSON object like {"callsign": null} or {"callsign": "..."}
-      return result.callsign; 
-    } catch (error) {
-      console.error("Error extracting callsign:", error);
-      return null; // Return null on error to avoid breaking the flow
     }
+  });
+
+  const json = JSON.parse(response.text || '{}');
+  return {
+    primary: json.readback || "Say again?",
+    alternatives: json.alternatives || [],
+    confidence: json.confidence || 0.0
   };
+}
 
-export const checkReadbackAccuracy = async (
-  atcInstruction: string,
-  pilotReadback: string,
-  language: LanguageCode,
-  history: ConversationEntry[],
-  expectedReadback?: string
-): Promise<ReadbackFeedback> => {
+export async function checkReadbackAccuracy(
+  atcText: string,
+  pilotText: string,
+  language: LanguageCode = 'en-US',
+  history: ConversationEntry[] = [],
+  expectedReadback?: string,
+  diversityMode: boolean = false
+): Promise<ReadbackFeedback> {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const languageName = SUPPORTED_LANGUAGES[language];
+
+  const historyText = history.map(h => `${h.speaker}: ${h.text}`).join('\n');
   
-  const mainTaskPrompt = expectedReadback
-    ? `Your task is to provide a detailed analysis comparing the "Pilot's Read-back" to the "Expected Read-back". The "Original ATC Instruction" is provided for context.`
-    : `Your task is to provide a detailed, "fuzzy" analysis of a pilot's read-back of an Air Traffic Control (ATC) instruction, focusing on semantic and numerical correctness rather than a strict word-for-word match.`;
-  
-  const expectedReadbackSection = expectedReadback 
-    ? `**Expected Read-back (Ground Truth):**
-"${expectedReadback}"
-` 
-    : '';
+  // Enhanced diversity instructions
+  const diversityInstructions = diversityMode 
+    ? `
+      CRITICAL DIVERSITY & ACCENT PROTOCOL:
+      - Adopt an algorithmic approach to explicitly differentiate between:
+        1. Harmless phonetic variations caused by accents (e.g., vowel shifts, "tree" for "three", "niner" for "nine", non-standard cadence).
+        2. Safety-critical operational errors (e.g., wrong altitude numbers, incorrect runway, missing hold short instructions).
+      - IF the error is Type 1 (accent/phonetic only) -> You MUST mark accuracy as CORRECT.
+      - IF the error is Type 2 (operational/safety) -> You MUST mark accuracy as INCORRECT.
+      - Your goal is to ensure fair, constructive feedback that embraces language diversity while strictly maintaining flight safety standards.
+      ` 
+    : `
+      - Allow for standard aviation variations (e.g., "tree" for "three").
+      - Focus on operational accuracy (numbers, clearances).
+      `;
 
-  const prompt = `You are an expert Certified Flight Instructor (CFI) specializing in radio communications. ${mainTaskPrompt} Both are in ${languageName}.
+  const prompt = `
+    You are a Certified Flight Instructor (CFI) specializing in radio communications.
+    Task: Evaluate the accuracy of the pilot's read-back.
 
-  **Primary Goal:**
-  Determine if the read-back is operationally 'CORRECT' or 'INCORRECT'. A read-back is only 'CORRECT' if all critical information from the ATC instruction is repeated accurately, as reflected in the expected read-back. Use the conversation history to understand the context.
+    ${diversityInstructions}
 
-  **Analysis Guidelines:**
-  1.  **Strict on Critical Data:** Altitudes, headings, frequencies, squawk codes, clearances (e.g., "cleared for takeoff"), and runway numbers MUST be read back precisely. Any deviation, omission, or addition of these critical elements makes the entire read-back 'INCORRECT'.
-  2.  **Tolerate Minor Variations:** Accept minor, safe deviations that do not change the core instruction. This includes:
-      *   Benign fillers ('uh', 'okay', 'roger').
-      *   Reordering of non-sequential instructions (e.g., "climb and maintain" vs. "maintain and climb").
-      *   Substituting words with safe synonyms (e.g., "report on final" vs. "call me on final").
-      *   Omitting conversational pleasantries (e.g., "good day").
-  3.  **Phrase-by-Phrase Analysis:** Break down the pilot's read-back into its core semantic components (e.g., callsign, action, altitude, frequency). For each component, categorize its status and provide a brief explanation if it's not perfect.
-      *   \`correct\`: The component is a perfect or near-perfect match of the instruction.
-      *   \`acceptable_variation\`: The component is not a word-for-word match but is operationally correct and safe (e.g., includes a filler word).
-      *   \`incorrect\`: The component contains a significant error (wrong number, wrong command) or is missing.
-  4.  **Calculate Accuracy Score:** Provide a numerical \`accuracyScore\` from 0.0 to 1.0. This score should reflect the overall semantic and numerical correctness. It is NOT a simple word match percentage. A read-back with a wrong altitude must have a low score, even if all other words are correct.
+    Context History:
+    ${historyText}
 
-  **Recent Communication History (for context):**
-  ${formatHistoryForPrompt(history)}
+    ATC Instruction: "${atcText}"
+    ${expectedReadback ? `Expected Standard Read-back (Ground Truth): "${expectedReadback}"` : ''}
+    Pilot Actual Read-back: "${pilotText}"
+    Language: ${SUPPORTED_LANGUAGES[language]}
 
-  **Output Requirements:**
-  - Provide a 'CORRECT' or 'INCORRECT' \`accuracy\` rating.
-  - Provide a numerical \`accuracyScore\` from 0.0 to 1.0.
-  - Provide a concise \`feedbackSummary\`.
-  - If the \`accuracy\` is 'INCORRECT', you **MUST** provide actionable \`detailedFeedback\`, the complete \`correctPhraseology\` (which should be the provided "Expected Read-back" if available), a list of \`commonPitfalls\` that lead to such errors, and a specific \`furtherReading\` reference. These fields are critical for user learning and are not optional.
-  - **ALWAYS** provide a \`phraseAnalysis\` array.
+    Analyze the pilot's read-back for:
+    1. **Accuracy**: Did they read back all mandatory elements (altitudes, headings, frequencies, clearances)?
+    2. **Phraseology**: Did they use standard ICAO/FAA terminology?
+    3. **Callsign**: Did they include their callsign?
 
-  **Original ATC Instruction:**
-  "${atcInstruction}"
-  
-  ${expectedReadbackSection}
+    Compare specifically against the "${expectedReadback ? 'Expected Standard Read-back' : 'ATC Instruction'}" to determine correctness.
 
-  **Pilot's Read-back:**
-  "${pilotReadback}"
+    Return a JSON object.
   `;
-  
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-        accuracy: { type: Type.STRING, enum: ['CORRECT', 'INCORRECT'] },
-        accuracyScore: { type: Type.NUMBER, description: "A numerical score from 0.0 to 1.0 for the read-back's correctness." },
-        feedbackSummary: { type: Type.STRING, description: 'A one-sentence summary of the feedback.' },
-        detailedFeedback: { type: Type.STRING, description: 'A detailed explanation of any errors.' },
-        correctPhraseology: { type: Type.STRING, description: 'The 100% correct version of the read-back.' },
-        phraseAnalysis: {
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          accuracy: { type: Type.STRING, enum: ["CORRECT", "INCORRECT"] },
+          accuracyScore: { type: Type.NUMBER, description: "Score from 0.0 to 1.0" },
+          feedbackSummary: { type: Type.STRING, description: "A concise, spoken-style summary of the feedback for the pilot." },
+          detailedFeedback: { type: Type.STRING },
+          correctPhraseology: { type: Type.STRING },
+          phraseAnalysis: {
             type: Type.ARRAY,
-            description: "A breakdown of the pilot's read-back.",
             items: {
-                type: Type.OBJECT,
-                properties: {
-                    phrase: { type: Type.STRING, description: "A segment of the pilot's read-back." },
-                    status: { type: Type.STRING, enum: ['correct', 'acceptable_variation', 'incorrect'] },
-                    explanation: { type: Type.STRING, description: "A brief explanation for 'incorrect' or 'acceptable_variation' statuses." }
-                },
-                required: ['phrase', 'status']
+              type: Type.OBJECT,
+              properties: {
+                phrase: { type: Type.STRING },
+                status: { type: Type.STRING, enum: ["correct", "acceptable_variation", "incorrect"] },
+                explanation: { type: Type.STRING }
+              }
             }
-        },
-        commonPitfalls: { type: Type.STRING, description: 'Common reasons pilots make this kind of error.' },
-        furtherReading: { type: Type.STRING, description: 'A suggestion for further study, e.g., "AIM 4-2-3".' }
-    },
-    required: ['accuracy', 'accuracyScore', 'feedbackSummary', 'phraseAnalysis'],
-  };
-
-  try {
-    const response = await ai.models.generateContent({
-      // Fix: Use recommended model for complex text tasks.
-      model: 'gemini-3-pro-preview',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        thinkingConfig: { thinkingBudget: 32768 }
-      },
-    });
-    
-    const result = JSON.parse(response.text);
-    return result;
-  } catch (error) {
-    console.error("Error checking readback accuracy:", error);
-    return {
-      accuracy: 'INCORRECT',
-      accuracyScore: 0,
-      feedbackSummary: 'Could not verify read-back accuracy at this time.',
-      phraseAnalysis: [],
-    };
-  }
-};
-
-
-export const generateSpeech = async (text: string, voiceName: PilotVoiceName | AtcVoiceName): Promise<Uint8Array | null> => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: voiceName },
           },
+          commonPitfalls: { type: Type.STRING },
+          furtherReading: { type: Type.STRING }
         },
-      },
-    });
-    
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
-      return decode(base64Audio);
+        required: ["accuracy", "accuracyScore", "feedbackSummary", "detailedFeedback", "correctPhraseology", "phraseAnalysis"]
+      }
     }
-    return null;
-  } catch (error) {
-    console.error("Error generating speech:", error);
-    return null;
-  }
-};
+  });
 
-// Fix: Remove explicit return type Promise<LiveSession> to allow for type inference.
-export const connectToLive = (
-  onInterimTranscription: (text: string, confidence?: number) => void,
-  onFinalTranscription: (text: string, confidence?: number) => void,
-  onError: (error: any) => void,
+  const json = JSON.parse(response.text || '{}');
+  return json as ReadbackFeedback;
+}
+
+export async function extractCallsign(
+  text: string, 
   language: LanguageCode,
-  mode: 'atc' | 'pilot' = 'atc'
-) => {
+  history: ConversationEntry[] = []
+): Promise<string | null> {
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const historyText = history.map(h => `${h.speaker}: ${h.text}`).join('\n');
+
+  const prompt = `
+    Extract the *aircraft* callsign from the text below.
+    Text: "${text}"
+    History:
+    ${historyText}
+    Language: ${SUPPORTED_LANGUAGES[language]}
+
+    Rules:
+    1. Identify the target aircraft callsign (e.g., "November 123 Alpha Bravo", "United 454", "Speedbird 10").
+    2. Convert it to standard alphanumeric format (e.g., "N123AB", "UAL454", "BAW10").
+    3. IGNORE ATC facility callsigns (e.g., "Boston Tower", "Logan Ground", "New York Approach", "Center").
+    4. If NO aircraft callsign is found, or if the text only contains ATC facility names, return null.
+    5. Be smart about abbreviations if context allows.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          callsign: { type: Type.STRING, nullable: true }
+        }
+      }
+    }
+  });
+
+  const json = JSON.parse(response.text || '{}');
+  return json.callsign;
+}
+
+export async function generateSpeech(text: string, voice: PilotVoiceName | AtcVoiceName): Promise<Uint8Array | null> {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const languageName = SUPPORTED_LANGUAGES[language];
-    const systemInstruction = mode === 'atc'
-        ? `You are an expert Air Traffic Control radio transcriber. Your sole function is to accurately transcribe ATC communications in ${languageName}. Do not generate conversational responses. Your transcription must be as precise as possible, capturing the specialized language of aviation.
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-preview-tts',
+            contents: { parts: [{ text }] },
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: voice },
+                    },
+                },
+            },
+        });
 
-**Key Transcription Guidelines:**
-1.  **Numbers are Critical:** Transcribe all numbers with extreme accuracy, as they represent altitudes, headings, frequencies, and squawk codes.
-2.  **Phonetic Alphabet:** Recognize and correctly spell out the full ICAO phonetic alphabet (e.g., Alpha, Bravo, Charlie, Delta, Echo...).
-3.  **Aviation Number Pronunciation:** Correctly interpret and transcribe non-standard number pronunciations:
-    *   "tree" for "three"
-    *   "fife" for "five"
-    *   "niner" for "nine"
-    *   "one hundred" for altitudes like "one zero zero".
-4.  **Common Aviation Jargon & Acronyms:** Be prepared to transcribe the following terms and more:
-    *   "squawk", "ident", "standby"
-    *   "SID" (Standard Instrument Departure), "STAR" (Standard Terminal Arrival Route)
-    *   "VFR" (Visual Flight Rules), "IFR" (Instrument Flight Rules)
-    *   "cleared for the option", "cleared direct", "cleared ILS approach"
-    *   "report", "say again", "read back"
-    *   "flight level", "maintain", "descend", "climb"
-    *   "QNH", "altimeter", "transition level"
-    *   "holding short", "line up and wait", "cleared for takeoff/landing"
-    *   "go around", "vectors", "resume own navigation"
-    *   "traffic", "runway incursion"
-    *   "Roger", "Wilco", "Affirm", "Negative"
+        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (base64Audio) {
+            return decode(base64Audio);
+        }
+        return null;
+    } catch (error) {
+        console.error("TTS generation failed:", error);
+        return null;
+    }
+}
 
-Do not add any commentary. Only provide the clean transcription.`
-        : `You are an expert pilot radio transcriber. Your sole function is to accurately transcribe a pilot's read-back of an ATC instruction in ${languageName}. Do not generate conversational responses. Pay close attention to aviation-specific phraseology, especially the pilot's callsign and the precise repetition of clearances, altitudes, and headings.`;
+export async function connectToLive(
+    onInterim: (text: string, confidence?: number) => void,
+    onFinal: (text: string, confidence?: number) => void,
+    onError: (error: any) => void,
+    languageCode: LanguageCode,
+    mode: 'atc' | 'pilot' = 'atc',
+    diversityMode: boolean = false
+): Promise<any> {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    
+    const aviationContext = `
+      You are an expert Aviation Transcriber with advanced predictive text capabilities.
+      Domain: Air Traffic Control (ATC) and Pilot Communications.
+      
+      CORE OBJECTIVE: Output complete, coherent, and grammatically correct aviation phrases.
+      
+      Advanced Processing Rules:
+      1. **Smart Reconstruction**: actively guess and complete cut-off words based on aviation context (e.g., "al...tude" -> "altitude", "u...ted" -> "United").
+      2. **Word Integrity**: NEVER output broken words or fragmented syllables with spaces (e.g., correct "land ing" to "landing", "t ax i" to "taxi").
+      3. **Phrase Continuity**: Ensure the transcribed text flows logically as a standard ATC command or read-back.
+      
+      Knowledge Base:
+      - ICAO Phonetics: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliett, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu.
+      - Aviation Numbers: "Tree" (3), "Fife" (5), "Niner" (9), "Thousand", "Hundred".
+      - Critical Jargon: Squawk, Ident, ILS, VOR, Hold Short, Cleared, Runway, Taxi, Flight Level, Altimeter, Approach, Center, Tower, Ground, Localizer, Radial, Vectors, Direct.
+      
+      Standard Instructions:
+      - Accurately transcribe all numbers (altitudes, headings, frequencies, squawk codes).
+      - Recognize standard callsign formats (N-numbers, Airline callsigns).
+      - Ignore background cockpit noise or static.
+      ${diversityMode ? '- DIVERSITY MODE ACTIVE: Apply logic to normalize diverse accents and non-native pronunciations. Focus on extracting the semantic aviation intent over strict phonetic matching.' : ''}
+      ${mode === 'pilot' ? '- Focus on pilot read-back phraseology (e.g., "Roger", "Wilco", repeating instructions).' : '- Focus on ATC instruction phraseology (e.g., "Cleared to", "Turn left", "Contact").'}
+    `;
 
-    let accumulatedText = '';
-    let lastConfidence: number | undefined;
-
-    return ai.live.connect({
+    const session = await ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        config: {
+            systemInstruction: `${aviationContext}\nLanguage: ${SUPPORTED_LANGUAGES[languageCode]}`,
+        },
         callbacks: {
-            onopen: () => console.log('Live session opened.'),
+            onopen: () => {
+                console.log("Live session connected");
+            },
             onmessage: (message: LiveServerMessage) => {
-                if (message.serverContent?.inputTranscription) {
-                    const textChunk = message.serverContent.inputTranscription.text;
-                    const confidence = message.serverContent.inputTranscription.confidence;
-                    
-                    if (textChunk) {
-                        const separator = accumulatedText ? ' ' : '';
-                        accumulatedText += separator + textChunk;
-                        lastConfidence = confidence;
-                        onInterimTranscription(accumulatedText, confidence);
-                    }
+                if (message.serverContent?.modelTurn?.parts?.[0]?.text) {
+                     // Handle text if model generates it (rare in this config but possible)
                 }
                 
                 if (message.serverContent?.turnComplete) {
-                    onFinalTranscription(accumulatedText, lastConfidence);
+                   // Turn complete. Use the accumulated buffer as final.
+                   // Note: In a real streaming app, we might rely on the inputAudioTranscription final flag,
+                   // but here we trigger 'final' logic when the turn is done.
+                }
+                
+                // Check for transcriptions
+                const transcription = message.serverContent?.inputAudioTranscription;
+                if (transcription) {
+                    const text = transcription.text;
+                    // Note: The API doesn't give a strict 'isFinal' flag for every packet, 
+                    // but we can treat updates as interim until turnComplete or a pause logic in App.tsx.
+                    // However, usually we just get a stream of text.
+                    // We pass it as interim. App.tsx handles finalization via 'turnComplete' logic or manual stop.
+                    if (text) {
+                        onInterim(text, 0.9); // Confidence placeholder
+                        if (transcription.isFinal) {
+                            onFinal(text, 0.9);
+                        }
+                    }
                 }
             },
-            onerror: (e) => {
-                console.error('Live session error:', e);
-                onError(e);
+            onerror: (error: any) => {
+                onError(error);
             },
-            onclose: (e) => {
-                console.log('Live session closed.');
+            onclose: () => {
+                console.log("Live session closed");
             },
-        },
-        config: {
-            responseModalities: [Modality.AUDIO],
-            inputAudioTranscription: {},
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
-            },
-            systemInstruction: systemInstruction,
         },
     });
-};
+    
+    return session;
+}
