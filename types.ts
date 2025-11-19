@@ -1,4 +1,3 @@
-
 export enum AppStatus {
   IDLE = 'IDLE',
   LISTENING = 'LISTENING',
@@ -16,6 +15,7 @@ export interface PhraseAnalysis {
 
 export interface ReadbackFeedback {
   accuracy: 'CORRECT' | 'INCORRECT';
+  accuracyScore?: number; // Score from 0.0 to 1.0
   feedbackSummary: string;
   detailedFeedback?: string;
   correctPhraseology?: string;
@@ -46,12 +46,40 @@ export const SUPPORTED_LANGUAGES = {
 
 export type LanguageCode = keyof typeof SUPPORTED_LANGUAGES;
 
-export const AVAILABLE_VOICES = {
+export const AVAILABLE_PILOT_VOICES = {
   'Puck': 'Standard Male 1',
   'Kore': 'Standard Female',
   'Zephyr': 'Calm Male',
   'Charon': 'Deep Male',
-  'Fenrir': 'Authoritative Male',
 } as const;
 
-export type VoiceName = keyof typeof AVAILABLE_VOICES;
+export type PilotVoiceName = keyof typeof AVAILABLE_PILOT_VOICES;
+
+export const AVAILABLE_ATC_VOICES = {
+  'Fenrir': 'Authoritative Male',
+  'Puck': 'Standard Male 1',
+  'Kore': 'Standard Female',
+  'Zephyr': 'Calm Male',
+  'Charon': 'Deep Male',
+} as const;
+
+export type AtcVoiceName = keyof typeof AVAILABLE_ATC_VOICES;
+
+export const AVAILABLE_PLAYBACK_SPEEDS = {
+  '0.75': '0.75x (Slow)',
+  '1.0': '1.0x (Normal)',
+  '1.25': '1.25x (Fast)',
+  '1.5': '1.5x (Faster)',
+} as const;
+
+export type PlaybackSpeed = keyof typeof AVAILABLE_PLAYBACK_SPEEDS;
+
+export interface TrainingScenario {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  atcInstruction: string;
+  expectedReadback: string;
+  isCustom?: boolean;
+}

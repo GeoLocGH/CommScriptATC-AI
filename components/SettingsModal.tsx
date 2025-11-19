@@ -1,23 +1,29 @@
 import React, { useState } from 'react';
-import { LanguageCode, SUPPORTED_LANGUAGES, VoiceName, AVAILABLE_VOICES } from '../types';
+import { LanguageCode, SUPPORTED_LANGUAGES, PilotVoiceName, AVAILABLE_PILOT_VOICES, AtcVoiceName, AVAILABLE_ATC_VOICES, PlaybackSpeed, AVAILABLE_PLAYBACK_SPEEDS } from '../types';
 
 interface SettingsModalProps {
   currentCallsign: string;
   currentLanguage: LanguageCode;
-  currentVoice: VoiceName;
-  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: VoiceName) => void;
+  currentVoice: PilotVoiceName;
+  currentAtcVoice: AtcVoiceName;
+  currentPlaybackSpeed: PlaybackSpeed;
+  currentAccuracyThreshold: number;
+  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number) => void;
   onClose: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, onSave, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, currentAtcVoice, currentPlaybackSpeed, currentAccuracyThreshold, onSave, onClose }) => {
   const [callsign, setCallsign] = useState(currentCallsign);
   const [language, setLanguage] = useState<LanguageCode>(currentLanguage);
-  const [voice, setVoice] = useState<VoiceName>(currentVoice);
+  const [voice, setVoice] = useState<PilotVoiceName>(currentVoice);
+  const [atcVoice, setAtcVoice] = useState<AtcVoiceName>(currentAtcVoice);
+  const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(currentPlaybackSpeed);
+  const [accuracyThreshold, setAccuracyThreshold] = useState(currentAccuracyThreshold);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (callsign.trim()) {
-      onSave(callsign.trim(), language, voice);
+      onSave(callsign.trim(), language, voice, atcVoice, playbackSpeed, accuracyThreshold);
     }
   };
 
@@ -26,7 +32,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
       <div className="w-full max-w-md bg-gray-800 rounded-lg shadow-2xl border border-gray-700 p-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-white">Settings</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-white">&times;</button>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-white">&times;</button>
         </div>
         
         <form onSubmit={handleSave}>
@@ -65,19 +71,73 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
           
           <div className="mb-6">
             <label htmlFor="voice" className="block text-sm font-medium text-gray-300 mb-2">
-              Read-back Voice
+              Pilot Read-back Voice
             </label>
             <select
               id="voice"
               value={voice}
-              onChange={(e) => setVoice(e.target.value as VoiceName)}
+              onChange={(e) => setVoice(e.target.value as PilotVoiceName)}
               className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
             >
-              {Object.entries(AVAILABLE_VOICES).map(([code, name]) => (
+              {Object.entries(AVAILABLE_PILOT_VOICES).map(([code, name]) => (
                 <option key={code} value={code}>{name}</option>
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-2">Select the voice for the AI pilot's read-back.</p>
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="atc-voice" className="block text-sm font-medium text-gray-300 mb-2">
+              ATC Voice (Training)
+            </label>
+            <select
+              id="atc-voice"
+              value={atcVoice}
+              onChange={(e) => setAtcVoice(e.target.value as AtcVoiceName)}
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              {Object.entries(AVAILABLE_ATC_VOICES).map(([code, name]) => (
+                <option key={code} value={code}>{name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-2">Select the voice for the AI controller in training scenarios.</p>
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="playbackSpeed" className="block text-sm font-medium text-gray-300 mb-2">
+              Training Playback Speed
+            </label>
+            <select
+              id="playbackSpeed"
+              value={playbackSpeed}
+              onChange={(e) => setPlaybackSpeed(e.target.value as PlaybackSpeed)}
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              {Object.entries(AVAILABLE_PLAYBACK_SPEEDS).map(([speed, name]) => (
+                <option key={speed} value={speed}>{name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-2">Adjust the playback speed of ATC instructions in training mode.</p>
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="accuracyThreshold" className="block text-sm font-medium text-gray-300 mb-2">
+              Read-back Accuracy Threshold
+            </label>
+            <div className="flex items-center space-x-4">
+              <input
+                type="range"
+                id="accuracyThreshold"
+                min="50"
+                max="100"
+                step="5"
+                value={accuracyThreshold}
+                onChange={(e) => setAccuracyThreshold(parseInt(e.target.value, 10))}
+                className="w-full"
+              />
+              <span className="font-bold text-cyan-400 w-12 text-center">{accuracyThreshold}%</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">In training, prompt a retry if accuracy is below this score.</p>
           </div>
 
           <div className="flex justify-end space-x-4">

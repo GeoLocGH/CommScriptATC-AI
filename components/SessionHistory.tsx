@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Session } from '../types';
 import HistoryIcon from './icons/HistoryIcon';
 import TrashIcon from './icons/TrashIcon';
+import PlusIcon from './icons/PlusIcon';
+
 
 interface SessionHistoryProps {
   sessions: Session[];
@@ -27,6 +29,7 @@ const SessionHistory: React.FC<SessionHistoryProps> = ({ sessions, currentSessio
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between p-3 text-left text-cyan-400 hover:bg-gray-700/50 rounded-t-lg transition-colors"
         aria-expanded={isOpen}
+        title={isOpen ? "Collapse Session History" : "Expand Session History"}
       >
         <div className="flex items-center space-x-2">
           <HistoryIcon className="w-5 h-5" />
@@ -43,17 +46,20 @@ const SessionHistory: React.FC<SessionHistoryProps> = ({ sessions, currentSessio
       </button>
       {isOpen && (
         <div className="p-3 border-t border-gray-700">
-          <div className="flex justify-between items-center mb-3">
-             <button
+          <div className="flex items-center mb-3 space-x-2">
+            <button
               onClick={onNewSession}
-              className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              title="Start a new live session"
             >
+              <PlusIcon className="w-5 h-5" />
               New Session
             </button>
             {sessions.length > 0 && (
                  <button
                     onClick={handleClear}
-                    className="px-3 py-1 text-sm text-red-300 hover:bg-red-500/20 rounded-md transition-colors"
+                    className="px-3 py-2 text-sm text-red-300 hover:bg-red-500/20 rounded-md transition-colors"
+                    title="Delete all saved sessions"
                  >
                     Clear All
                 </button>
@@ -67,6 +73,7 @@ const SessionHistory: React.FC<SessionHistoryProps> = ({ sessions, currentSessio
                   key={session.id}
                   className={`flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${currentSessionId === session.id ? 'bg-blue-500/30' : 'hover:bg-gray-700/50'}`}
                   onClick={() => onLoadSession(session)}
+                  title={`Load session from ${session.date}`}
                 >
                   <span className="text-gray-300">{session.date}</span>
                   <button
@@ -76,6 +83,7 @@ const SessionHistory: React.FC<SessionHistoryProps> = ({ sessions, currentSessio
                     }}
                     className="p-1 text-gray-500 hover:text-red-400 rounded-full transition-colors"
                     aria-label="Delete session"
+                    title="Delete session"
                   >
                     <TrashIcon className="w-4 h-4" />
                   </button>

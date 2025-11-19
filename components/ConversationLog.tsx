@@ -4,19 +4,23 @@ import PilotIcon from './icons/PilotIcon';
 import TowerIcon from './icons/TowerIcon';
 import CheckCircleIcon from './icons/CheckCircleIcon';
 import WarningIcon from './icons/WarningIcon';
+import RedoIcon from './icons/RedoIcon';
 
 interface ConversationLogProps {
   log: ConversationEntry[];
   interimTranscription: string;
+  accuracyThreshold: number;
 }
 
-const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score }) => {
+const ConfidenceIndicator: React.FC<{ score: number | undefined, speaker: 'ATC' | 'PILOT' }> = ({ score, speaker }) => {
   if (typeof score !== 'number') {
     return null;
   }
 
   const roundedScore = Math.round(score * 100);
-  const title = `Transcription Confidence: ${roundedScore}%`;
+  const title = speaker === 'ATC'
+    ? `Transcription Confidence: ${roundedScore}%`
+    : `Read-back Generation Confidence: ${roundedScore}%`;
 
   let colorClass = 'bg-red-500';
   if (score >= 0.85) {
@@ -36,7 +40,7 @@ const ConfidenceIndicator: React.FC<{ score: number | undefined }> = ({ score })
   );
 };
 
-const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription }) => {
+const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscription, accuracyThreshold }) => {
   const endOfLogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,6 +66,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
 
     const {
       accuracy,
+      accuracyScore,
       feedbackSummary,
       detailedFeedback,
       correctPhraseology,
@@ -74,6 +79,8 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
     const borderColor = isCorrect ? 'border-green-500/50' : 'border-yellow-500/50';
     const iconColor = isCorrect ? 'text-green-400' : 'text-yellow-400';
     const titleColor = isCorrect ? 'text-green-300' : 'text-yellow-300';
+    const scorePercentage = typeof accuracyScore === 'number' ? Math.round(accuracyScore * 100) : null;
+    const isBelowThreshold = typeof accuracyScore === 'number' && accuracyScore < (accuracyThreshold / 100);
 
     const FeedbackSection: React.FC<{ title: string; children: React.ReactNode; mono?: boolean }> = ({ title, children, mono = false }) => (
       <div className="mt-3">
@@ -113,17 +120,33 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
 
     return (
       <div className={`mt-3 p-3 rounded-lg border bg-gray-800/50 ${borderColor}`}>
-        <div className="flex items-start space-x-2">
-          {isCorrect ? (
-            <CheckCircleIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
-          ) : (
-            <WarningIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
-          )}
-          <div>
-            <h4 className={`font-semibold ${titleColor}`}>Accuracy Check</h4>
-            <p className="text-gray-200">{feedbackSummary}</p>
-          </div>
+        <div className="flex items-start justify-between">
+            <div className="flex items-start space-x-2">
+              {isCorrect ? (
+                <CheckCircleIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
+              ) : (
+                <WarningIcon className={`w-5 h-5 ${iconColor} flex-shrink-0 mt-1`} />
+              )}
+              <div>
+                <h4 className={`font-semibold ${titleColor}`}>Accuracy Check</h4>
+                <p className="text-gray-200">{feedbackSummary}</p>
+              </div>
+            </div>
+            {scorePercentage !== null && (
+                <div className={`text-sm font-bold px-2 py-1 rounded-md ${isCorrect ? 'bg-green-500/20 text-green-300' : 'bg-yellow-500/20 text-yellow-300'}`}>
+                    {scorePercentage}%
+                </div>
+            )}
         </div>
+        
+        {isBelowThreshold && (
+          <div className="ml-7 mt-3 p-3 rounded-md bg-red-500/10 border border-red-500/30 flex items-center gap-2">
+            <RedoIcon className="w-5 h-5 text-red-300 flex-shrink-0" />
+            <p className="text-red-200 text-sm">
+              Accuracy is below your threshold of {accuracyThreshold}%. Please try the read-back again.
+            </p>
+          </div>
+        )}
         
         {(phraseAnalysis || !isCorrect || (entry.alternatives && entry.alternatives.length > 0)) && (
              <div className="ml-7 mt-2 border-l border-gray-600 pl-4">
@@ -165,7 +188,7 @@ const ConversationLog: React.FC<ConversationLogProps> = ({ log, interimTranscrip
             <div className="flex-1">
               <div className="flex items-center">
                 {getLabel(entry.speaker)}
-                {entry.speaker === 'ATC' && <ConfidenceIndicator score={entry.confidence} />}
+                <ConfidenceIndicator score={entry.confidence} speaker={entry.speaker} />
               </div>
               <p className="text-gray-200 text-lg leading-relaxed">{entry.text}</p>
               {entry.speaker === 'PILOT' && <FeedbackBlock entry={entry} />}
