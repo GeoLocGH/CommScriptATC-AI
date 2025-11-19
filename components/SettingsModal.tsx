@@ -28,16 +28,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
   };
 
   return (
-    <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="w-full max-w-md bg-gray-800 rounded-lg shadow-2xl border border-gray-700 p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-white">Settings</h2>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-white">&times;</button>
-        </div>
-        
+    <div className="fixed top-20 right-4 z-40 w-80 bg-gray-800 rounded-lg shadow-2xl border border-gray-700 flex flex-col max-h-[80vh]">
+      <div className="p-3 border-b border-gray-700 flex justify-between items-center bg-gray-800/95 backdrop-blur rounded-t-lg sticky top-0 z-10">
+        <h2 className="text-lg font-bold text-white">Settings</h2>
+        <button type="button" onClick={onClose} className="text-gray-500 hover:text-white text-xl">&times;</button>
+      </div>
+      
+      <div className="p-4 overflow-y-auto">
         <form onSubmit={handleSave}>
-          <div className="mb-6">
-            <label htmlFor="callsign" className="block text-sm font-medium text-gray-300 mb-2">
+          <div className="mb-4">
+            <label htmlFor="callsign" className="block text-xs font-medium text-gray-400 mb-1">
               Aircraft Callsign
             </label>
             <input
@@ -45,86 +45,81 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
               id="callsign"
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              placeholder="e.g., November-One-Two-Three-Alpha-Bravo"
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+              placeholder="e.g., N123AB"
               required
             />
-             <p className="text-xs text-gray-500 mt-2">Use phonetic alphabet for best results (e.g., "Alpha", not "A").</p>
           </div>
 
-          <div className="mb-6">
-            <label htmlFor="language" className="block text-sm font-medium text-gray-300 mb-2">
-              Transcription Language
+          <div className="mb-4">
+            <label htmlFor="language" className="block text-xs font-medium text-gray-400 mb-1">
+              Language
             </label>
             <select
               id="language"
               value={language}
               onChange={(e) => setLanguage(e.target.value as LanguageCode)}
-              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
             >
               {Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => (
                 <option key={code} value={code}>{name}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-2">Select the language for ATC communications.</p>
           </div>
           
-          <div className="mb-6">
-            <label htmlFor="voice" className="block text-sm font-medium text-gray-300 mb-2">
-              Pilot Read-back Voice
+          <div className="mb-4">
+            <label htmlFor="voice" className="block text-xs font-medium text-gray-400 mb-1">
+              Pilot Voice
             </label>
             <select
               id="voice"
               value={voice}
               onChange={(e) => setVoice(e.target.value as PilotVoiceName)}
-              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
             >
               {Object.entries(AVAILABLE_PILOT_VOICES).map(([code, name]) => (
                 <option key={code} value={code}>{name}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-2">Select the voice for the AI pilot's read-back.</p>
           </div>
 
-          <div className="mb-6">
-            <label htmlFor="atc-voice" className="block text-sm font-medium text-gray-300 mb-2">
+          <div className="mb-4">
+            <label htmlFor="atc-voice" className="block text-xs font-medium text-gray-400 mb-1">
               ATC Voice (Training)
             </label>
             <select
               id="atc-voice"
               value={atcVoice}
               onChange={(e) => setAtcVoice(e.target.value as AtcVoiceName)}
-              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
             >
               {Object.entries(AVAILABLE_ATC_VOICES).map(([code, name]) => (
                 <option key={code} value={code}>{name}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-2">Select the voice for the AI controller in training scenarios.</p>
           </div>
 
-          <div className="mb-6">
-            <label htmlFor="playbackSpeed" className="block text-sm font-medium text-gray-300 mb-2">
-              Training Playback Speed
+          <div className="mb-4">
+            <label htmlFor="playbackSpeed" className="block text-xs font-medium text-gray-400 mb-1">
+              Playback Speed
             </label>
             <select
               id="playbackSpeed"
               value={playbackSpeed}
               onChange={(e) => setPlaybackSpeed(e.target.value as PlaybackSpeed)}
-              className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
             >
               {Object.entries(AVAILABLE_PLAYBACK_SPEEDS).map(([speed, name]) => (
                 <option key={speed} value={speed}>{name}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-2">Adjust the playback speed of ATC instructions in training mode.</p>
           </div>
 
           <div className="mb-6">
-            <label htmlFor="accuracyThreshold" className="block text-sm font-medium text-gray-300 mb-2">
-              Read-back Accuracy Threshold
+            <label htmlFor="accuracyThreshold" className="block text-xs font-medium text-gray-400 mb-1">
+              Accuracy Threshold
             </label>
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-3">
               <input
                 type="range"
                 id="accuracyThreshold"
@@ -133,26 +128,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
                 step="5"
                 value={accuracyThreshold}
                 onChange={(e) => setAccuracyThreshold(parseInt(e.target.value, 10))}
-                className="w-full"
+                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
               />
-              <span className="font-bold text-cyan-400 w-12 text-center">{accuracyThreshold}%</span>
+              <span className="text-sm font-bold text-cyan-400 w-10 text-right">{accuracyThreshold}%</span>
             </div>
-            <p className="text-xs text-gray-500 mt-2">In training, prompt a retry if accuracy is below this score.</p>
           </div>
 
-          <div className="flex justify-end space-x-4">
+          <div className="flex justify-end space-x-3">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 rounded-md transition-colors"
+              className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-md transition-colors text-white"
             >
-              Cancel
+              Close
             </button>
             <button
               type="submit"
-              className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 rounded-md transition-colors text-white"
             >
-              Save
+              Save & Close
             </button>
           </div>
         </form>
