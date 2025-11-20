@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { LanguageCode, SUPPORTED_LANGUAGES, PilotVoiceName, AVAILABLE_PILOT_VOICES, AtcVoiceName, AVAILABLE_ATC_VOICES, PlaybackSpeed, AVAILABLE_PLAYBACK_SPEEDS } from '../types';
 
@@ -9,11 +10,12 @@ interface SettingsModalProps {
   currentPlaybackSpeed: PlaybackSpeed;
   currentAccuracyThreshold: number;
   currentDiversityMode: boolean;
-  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean) => void;
+  currentRadioEffects: boolean;
+  onSave: (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean, newRadioEffects: boolean) => void;
   onClose: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, currentAtcVoice, currentPlaybackSpeed, currentAccuracyThreshold, currentDiversityMode, onSave, onClose }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentLanguage, currentVoice, currentAtcVoice, currentPlaybackSpeed, currentAccuracyThreshold, currentDiversityMode, currentRadioEffects, onSave, onClose }) => {
   const [callsign, setCallsign] = useState(currentCallsign);
   const [language, setLanguage] = useState<LanguageCode>(currentLanguage);
   const [voice, setVoice] = useState<PilotVoiceName>(currentVoice);
@@ -21,11 +23,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(currentPlaybackSpeed);
   const [accuracyThreshold, setAccuracyThreshold] = useState(currentAccuracyThreshold);
   const [diversityMode, setDiversityMode] = useState(currentDiversityMode);
+  const [radioEffects, setRadioEffects] = useState(currentRadioEffects);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (callsign.trim()) {
-      onSave(callsign.trim(), language, voice, atcVoice, playbackSpeed, accuracyThreshold, diversityMode);
+      onSave(callsign.trim(), language, voice, atcVoice, playbackSpeed, accuracyThreshold, diversityMode, radioEffects);
     }
   };
 
@@ -134,6 +137,33 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ currentCallsign, currentL
               />
               <span className="text-sm font-bold text-cyan-400 w-10 text-right">{accuracyThreshold}%</span>
             </div>
+          </div>
+
+          <div className="mb-4">
+             <div className="flex items-center justify-between">
+                <label htmlFor="radioEffects" className="text-xs font-medium text-gray-400">
+                  Simulate Radio Effects
+                </label>
+                <button
+                  type="button"
+                  id="radioEffects"
+                  role="switch"
+                  aria-checked={radioEffects}
+                  onClick={() => setRadioEffects(!radioEffects)}
+                  className={`${
+                    radioEffects ? 'bg-blue-600' : 'bg-gray-700'
+                  } relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800`}
+                >
+                  <span
+                    className={`${
+                      radioEffects ? 'translate-x-5' : 'translate-x-1'
+                    } inline-block h-3 w-3 transform rounded-full bg-white transition-transform`}
+                  />
+                </button>
+             </div>
+             <p className="text-[10px] text-gray-500 mt-1">
+               Adds realistic static and frequency filtering to ATC audio.
+             </p>
           </div>
 
           <div className="mb-6">

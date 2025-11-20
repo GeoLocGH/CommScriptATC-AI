@@ -1,3 +1,4 @@
+
 export enum AppStatus {
   IDLE = 'IDLE',
   LISTENING = 'LISTENING',
@@ -47,7 +48,7 @@ export const SUPPORTED_LANGUAGES = {
 export type LanguageCode = keyof typeof SUPPORTED_LANGUAGES;
 
 export const AVAILABLE_PILOT_VOICES = {
-  'Puck': 'Standard Male 1',
+  'Puck': 'Standard Male',
   'Kore': 'Standard Female',
   'Zephyr': 'Calm Male',
   'Charon': 'Deep Male',
@@ -56,11 +57,11 @@ export const AVAILABLE_PILOT_VOICES = {
 export type PilotVoiceName = keyof typeof AVAILABLE_PILOT_VOICES;
 
 export const AVAILABLE_ATC_VOICES = {
-  'Fenrir': 'Authoritative Male',
-  'Puck': 'Standard Male 1',
-  'Kore': 'Standard Female',
-  'Zephyr': 'Calm Male',
-  'Charon': 'Deep Male',
+  'Fenrir': 'Authoritative Male (US)',
+  'Puck': 'Standard Male (US)',
+  'Kore': 'Standard Female (US)',
+  'Zephyr': 'Calm Male (US)',
+  'Charon': 'Deep Male (US)',
 } as const;
 
 export type AtcVoiceName = keyof typeof AVAILABLE_ATC_VOICES;

@@ -1,3 +1,4 @@
+
 // Fix: Remove LiveSession from import as it is not an exported member.
 // FIX: Import Blob as GeminiBlob for use in media streaming.
 import { GoogleGenAI, Blob as GeminiBlob } from '@google/genai';
@@ -113,6 +114,7 @@ const App: React.FC = () => {
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>('1.0');
   const [accuracyThreshold, setAccuracyThreshold] = useState(90);
   const [diversityMode, setDiversityMode] = useState(false);
+  const [enableRadioEffects, setEnableRadioEffects] = useState(true);
   const [isApiKeyReady, setIsApiKeyReady] = useState(false);
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -185,6 +187,10 @@ const App: React.FC = () => {
     const savedDiversityMode = localStorage.getItem('atc-copilot-diversity-mode');
     if (savedDiversityMode === 'true') {
         setDiversityMode(true);
+    }
+    const savedRadioEffects = localStorage.getItem('atc-copilot-radio-effects');
+    if (savedRadioEffects === 'false') {
+        setEnableRadioEffects(false);
     }
 
     const checkApiKey = async () => {
@@ -263,6 +269,100 @@ const App: React.FC = () => {
     }
   }, [isReviewing, isTrainingMode]);
 
+  // Centralized audio playback function with radio effect support
+  const playAudio = useCallback(async (audioBytes: Uint8Array, isAtc: boolean): Promise<void> => {
+      return new Promise(async (resolve) => {
+          // @ts-ignore
+          const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+          try {
+              const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
+              const source = playbackContext.createBufferSource();
+              source.buffer = audioBuffer;
+
+              // Apply Radio Effects for ATC/Instructor voice if enabled
+              if (isAtc && enableRadioEffects) {
+                  // High-pass filter (cut low frequencies)
+                  const highPass = playbackContext.createBiquadFilter();
+                  highPass.type = 'highpass';
+                  highPass.frequency.value = 300;
+
+                  // Low-pass filter (cut high frequencies)
+                  const lowPass = playbackContext.createBiquadFilter();
+                  lowPass.type = 'lowpass';
+                  lowPass.frequency.value = 3400;
+
+                  // Distortion (WaveShaper)
+                  const distortion = playbackContext.createWaveShaper();
+                  const makeDistortionCurve = (amount: number) => {
+                      const k = typeof amount === 'number' ? amount : 50;
+                      const n_samples = 44100;
+                      const curve = new Float32Array(n_samples);
+                      const deg = Math.PI / 180;
+                      for (let i = 0; i < n_samples; ++i) {
+                          const x = (i * 2) / n_samples - 1;
+                          curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+                      }
+                      return curve;
+                  };
+                  distortion.curve = makeDistortionCurve(50); // Amount of distortion
+                  distortion.oversample = '4x';
+                  
+                  // Gain to balance volume loss from filtering
+                  const gain = playbackContext.createGain();
+                  gain.gain.value = 0.8;
+
+                  source.connect(highPass);
+                  highPass.connect(lowPass);
+                  lowPass.connect(distortion);
+                  distortion.connect(gain);
+                  gain.connect(playbackContext.destination);
+
+                  // If recording, also connect to recording destination
+                  const recContext = recordingContextRef.current;
+                  const recDest = recordingDestinationNodeRef.current;
+                  if (recContext && recDest) {
+                       const streamDest = playbackContext.createMediaStreamDestination();
+                       gain.connect(streamDest);
+                       const recSource = recContext.createMediaStreamSource(streamDest.stream);
+                       recSource.connect(recDest);
+                  }
+              } else {
+                  // Normal playback
+                  source.connect(playbackContext.destination);
+                  
+                  // If recording
+                  const recContext = recordingContextRef.current;
+                  const recDest = recordingDestinationNodeRef.current;
+                  if (recContext && recDest) {
+                      const streamDest = playbackContext.createMediaStreamDestination();
+                      source.connect(streamDest);
+                      const recSource = recContext.createMediaStreamSource(streamDest.stream);
+                      recSource.connect(recDest);
+                  }
+              }
+
+              // Apply playback speed if it's ATC instruction (handled via caller currently, but we can set default)
+              // source.playbackRate.value = ... (Caller should handle if needed, or we pass as arg)
+              
+              // Actually, for training mode ATC instruction, we use `playbackSpeed`. 
+              // We can set it here if we pass it, but `playbackSpeed` is state. 
+              // Let's assume `isAtc` means "Apply radio effect", not strictly "Is ATC Instruction".
+              // Playback rate is specific to the instruction. 
+              
+              source.start();
+              source.onended = () => {
+                  playbackContext.close();
+                  resolve();
+              };
+          } catch (e) {
+              console.error("Audio playback failed", e);
+              playbackContext.close();
+              resolve();
+          }
+      });
+  }, [enableRadioEffects]);
+
+
   const processUserReadback = useCallback(async (userTranscription: string) => {
     if (!currentScenario) return;
 
@@ -296,22 +396,10 @@ const App: React.FC = () => {
 
         const audioBytes = await generateSpeech(feedbackText, atcVoice); // Use ATC voice as Instructor voice
         if (audioBytes) {
-             // @ts-ignore
-            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-            const source = playbackContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(playbackContext.destination);
-            source.start();
-            source.onended = () => {
-                playbackContext.close();
-                setStatus(AppStatus.IDLE);
-                setSpeakingContent('');
-            };
-        } else {
-            setStatus(AppStatus.IDLE);
-            setSpeakingContent('');
+            await playAudio(audioBytes, true); // Instructor feedback gets radio effect too
         }
+        setStatus(AppStatus.IDLE);
+        setSpeakingContent('');
 
     } catch (e) {
         console.error("Error processing user readback:", e);
@@ -320,9 +408,7 @@ const App: React.FC = () => {
         setErrorMessage("Failed to analyze read-back. Please try again.");
         setStatus(AppStatus.IDLE);
     }
-
-    // After feedback, the training turn is over. The user can retry or exit.
-  }, [currentScenario, language, diversityMode, atcVoice]);
+  }, [currentScenario, language, diversityMode, atcVoice, playAudio]);
 
   const processTranscription = useCallback(async (transcription: string, confidence?: number) => {
     setStatus(AppStatus.THINKING);
@@ -359,42 +445,19 @@ const App: React.FC = () => {
           setSpeakingContent('Speaking Read-back...');
           const audioBytes = await generateSpeech(readbackText, voice);
           if (audioBytes) {
-            return new Promise<void>(async (resolve) => {
-                // @ts-ignore
-                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-                const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-                const source = playbackContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(playbackContext.destination);
-
-                const recContext = recordingContextRef.current;
-                const recDest = recordingDestinationNodeRef.current;
-                if (recContext && recDest) {
-                    const ttsStreamDest = playbackContext.createMediaStreamDestination();
-                    source.connect(ttsStreamDest);
-                    const ttsRecordingSource = recContext.createMediaStreamSource(ttsStreamDest.stream);
-                    ttsRecordingSource.connect(recDest);
-                }
-
-                source.start();
-                source.onended = () => {
-                  playbackContext.close();
-                  setSpeakingContent('');
-                  resolve();
-                };
-            });
+            await playAudio(audioBytes, false); // Pilot voice, no radio effect
           } else {
              console.warn("TTS generation failed for readback");
              setErrorMessage("Audio generation failed, but text read-back is available.");
-             // Clear non-critical error after a delay
              setTimeout(() => setErrorMessage(null), 4000);
           }
         }
+        setSpeakingContent('');
     } catch (error) {
         console.error("Error processing transcription pipeline:", error);
         setErrorMessage("An error occurred while processing the ATC instruction.");
     }
-  }, [callsign, language, voice, diversityMode]);
+  }, [callsign, language, voice, diversityMode, playAudio]);
 
   const processAndStop = useCallback(async () => {
     const transcriptionToProcess = finalizedTranscriptRef.current.trim();
@@ -426,13 +489,9 @@ const App: React.FC = () => {
       }
     }
     
-    // In training mode, stay IDLE (or SPEAKING due to TTS in processUserReadback) to allow another attempt.
-    // In normal mode, finish the session.
     if (!isTrainingMode) {
       setStatus(AppStatus.IDLE);
       saveCurrentSession();
-    } else {
-      // processUserReadback handles setting status to SPEAKING/IDLE
     }
   }, [cleanupAudio, processTranscription, saveCurrentSession, isTrainingMode, processUserReadback]);
 
@@ -585,7 +644,6 @@ const App: React.FC = () => {
                 // Fallback: offer the webm file if conversion fails
                 const url = URL.createObjectURL(webmBlob);
                 setRecordedAudioUrl(url);
-                // alert("Could not convert audio to WAV, providing raw WEBM file instead. The downloaded file will have a .wav extension but may need to be renamed to .webm to play correctly.");
             }
         };
         mediaRecorderRef.current.start();
@@ -669,19 +727,8 @@ const App: React.FC = () => {
             setSpeakingContent('Speaking Read-back...');
             const audioBytes = await generateSpeech(readbackText, voice);
             if (audioBytes) {
-                // @ts-ignore
-                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-                const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-                const source = playbackContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(playbackContext.destination);
-                source.start();
-                source.onended = () => {
-                    playbackContext.close();
-                    setStatus(AppStatus.IDLE);
-                    setSpeakingContent('');
-                    saveCurrentSession();
-                };
+                await playAudio(audioBytes, false); // No radio effect for pilot readback regeneration
+                saveCurrentSession();
             } else {
                 setStatus(AppStatus.IDLE);
                 setSpeakingContent('');
@@ -699,7 +746,7 @@ const App: React.FC = () => {
         setStatus(AppStatus.ERROR);
         setErrorMessage("Failed to regenerate read-back. Please try again.");
     }
-  }, [conversationLog, callsign, language, voice, saveCurrentSession, diversityMode]);
+  }, [conversationLog, callsign, language, voice, saveCurrentSession, diversityMode, playAudio]);
   
   const handleClearTranscription = useCallback(() => {
     if (status !== AppStatus.LISTENING) return;
@@ -775,7 +822,7 @@ const App: React.FC = () => {
     setShowOnboarding(false);
   };
 
-  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean) => {
+  const handleSaveSettings = (newCallsign: string, newLanguage: LanguageCode, newVoice: PilotVoiceName, newAtcVoice: AtcVoiceName, newPlaybackSpeed: PlaybackSpeed, newAccuracyThreshold: number, newDiversityMode: boolean, newRadioEffects: boolean) => {
     setCallsign(newCallsign);
     localStorage.setItem('atc-copilot-callsign', newCallsign);
     setLanguage(newLanguage);
@@ -790,6 +837,8 @@ const App: React.FC = () => {
     localStorage.setItem('atc-copilot-accuracy-threshold', newAccuracyThreshold.toString());
     setDiversityMode(newDiversityMode);
     localStorage.setItem('atc-copilot-diversity-mode', String(newDiversityMode));
+    setEnableRadioEffects(newRadioEffects);
+    localStorage.setItem('atc-copilot-radio-effects', String(newRadioEffects));
     setShowSettings(false);
   };
   
@@ -807,26 +856,16 @@ const App: React.FC = () => {
     
     const audioBytes = await generateSpeech(scenario.atcInstruction, atcVoice);
     if (audioBytes) {
-        // @ts-ignore
-        const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        const audioBuffer = await decodeAudioData(audioBytes, playbackContext, 24000, 1);
-        const source = playbackContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.playbackRate.value = parseFloat(playbackSpeed);
-        source.connect(playbackContext.destination);
-        source.start();
-        source.onended = () => {
-          playbackContext.close();
-          setStatus(AppStatus.IDLE); // Ready for user to speak
-          setSpeakingContent('');
-        };
+        await playAudio(audioBytes, true); // Apply radio effect for ATC
+        setStatus(AppStatus.IDLE); // Ready for user to speak
+        setSpeakingContent('');
     } else {
         setStatus(AppStatus.IDLE);
         setSpeakingContent('');
         setErrorMessage("Could not play ATC instruction audio.");
         setTimeout(() => setErrorMessage(null), 3000);
     }
-  }, [handleNewSession, playbackSpeed, atcVoice]);
+  }, [handleNewSession, atcVoice, playAudio]);
 
   const handleExitTraining = useCallback(() => {
     stopListening(false);
@@ -888,21 +927,7 @@ const App: React.FC = () => {
         const atcAudioBytes = await generateSpeech(atcInstruction, atcVoice);
 
         if (atcAudioBytes) {
-            await new Promise<void>(async (resolve) => {
-                // @ts-ignore
-                const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-                const audioBuffer = await decodeAudioData(atcAudioBytes, playbackContext, 24000, 1);
-                const source = playbackContext.createBufferSource();
-                source.buffer = audioBuffer;
-                // Use training speed setting? Or normal? Prompt says "training mode", implies training speed.
-                source.playbackRate.value = parseFloat(playbackSpeed);
-                source.connect(playbackContext.destination);
-                source.start();
-                source.onended = () => {
-                    playbackContext.close();
-                    resolve();
-                };
-            });
+            await playAudio(atcAudioBytes, true); // ATC voice, radio effect
         }
 
         setStatus(AppStatus.THINKING);
@@ -916,22 +941,12 @@ const App: React.FC = () => {
         const pilotAudioBytes = await generateSpeech(readbackText, voice);
         
         if (pilotAudioBytes) {
-             // @ts-ignore
-            const playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            const audioBuffer = await decodeAudioData(pilotAudioBytes, playbackContext, 24000, 1);
-            const source = playbackContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(playbackContext.destination);
-            source.start();
-            source.onended = () => {
-                playbackContext.close();
-                setStatus(AppStatus.IDLE);
-                setSpeakingContent('');
-            };
-        } else {
-            setStatus(AppStatus.IDLE);
-            setSpeakingContent('');
+            await playAudio(pilotAudioBytes, false); // Pilot voice, clean
         }
+        
+        setStatus(AppStatus.IDLE);
+        setSpeakingContent('');
+        
     } catch (e) {
         console.error("Error during squawk submission:", e);
         setErrorMessage("Failed to process squawk code.");
@@ -939,7 +954,7 @@ const App: React.FC = () => {
     } finally {
         setSquawkCodeInput('');
     }
-  }, [squawkCodeInput, callsign, language, voice, atcVoice, playbackSpeed]);
+  }, [squawkCodeInput, callsign, language, voice, atcVoice, playAudio]);
 
 
   useEffect(() => {
@@ -971,6 +986,7 @@ const App: React.FC = () => {
         currentPlaybackSpeed={playbackSpeed}
         currentAccuracyThreshold={accuracyThreshold}
         currentDiversityMode={diversityMode}
+        currentRadioEffects={enableRadioEffects}
         onSave={handleSaveSettings} 
         onClose={() => setShowSettings(false)} 
        />}
