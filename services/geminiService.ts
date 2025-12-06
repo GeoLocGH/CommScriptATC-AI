@@ -41,6 +41,9 @@ const getApiKey = () => {
   return apiKey;
 };
 
+// Cache to store generated speech audio bytes
+const speechCache = new Map<string, Uint8Array>();
+
 export async function generateReadback(
   atcText: string, 
   callsign: string, 
@@ -111,12 +114,15 @@ export async function checkReadbackAccuracy(
   const diversityInstructions = diversityMode 
     ? `
       CRITICAL DIVERSITY & ACCENT PROTOCOL:
-      - Adopt an algorithmic approach to explicitly differentiate between:
-        1. Harmless phonetic variations caused by accents (e.g., vowel shifts, "tree" for "three", "niner" for "nine", non-standard cadence).
-        2. Safety-critical operational errors (e.g., wrong altitude numbers, incorrect runway, missing hold short instructions).
-      - IF the error is Type 1 (accent/phonetic only) -> You MUST mark accuracy as CORRECT.
-      - IF the error is Type 2 (operational/safety) -> You MUST mark accuracy as INCORRECT.
-      - Your goal is to ensure fair, constructive feedback that embraces language diversity while strictly maintaining flight safety standards.
+      - You are evaluating a pilot who may speak English as a second language or have a strong accent.
+      - CORE TASK: Differentiate between harmless phonetic variations and safety-critical operational errors.
+      - TOLERANCE RULES:
+        1. PHONETIC/ACCENT VARIATIONS: (e.g., "Tree" vs "Three", vowel shifts, choppy cadence, non-native intonation). IGNORE these if the semantic meaning and numbers are correct. Mark as CORRECT.
+        2. OPERATIONAL ERRORS: (e.g., Wrong altitude, wrong heading, wrong frequency, missing 'Cleared', incorrect callsign). Mark as INCORRECT.
+      - FEEDBACK GUIDANCE:
+        - Focus strictly on flight safety elements.
+        - Do not critique pronunciation unless it creates dangerous ambiguity.
+        - Ensure feedback is encouraging and supportive.
       ` 
     : `
       - Allow for standard aviation variations (e.g., "tree" for "three").
@@ -157,7 +163,7 @@ export async function checkReadbackAccuracy(
         properties: {
           accuracy: { type: Type.STRING, enum: ["CORRECT", "INCORRECT"] },
           accuracyScore: { type: Type.NUMBER, description: "Score from 0.0 to 1.0" },
-          feedbackSummary: { type: Type.STRING, description: "A concise, spoken-style summary of the feedback for the pilot." },
+          feedbackSummary: { type: Type.STRING, description: "A concise, spoken-style summary of the feedback (max 2 sentences) optimized for Text-to-Speech." },
           detailedFeedback: { type: Type.STRING },
           correctPhraseology: { type: Type.STRING },
           phraseAnalysis: {
@@ -225,16 +231,33 @@ export async function extractCallsign(
 }
 
 export async function generateSpeech(text: string, voice: PilotVoiceName | AtcVoiceName): Promise<Uint8Array | null> {
+    const cacheKey = `${voice}:${text}`;
+    if (speechCache.has(cacheKey)) {
+        return speechCache.get(cacheKey)!;
+    }
+
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    
+    // Handle voice keys with suffixes (e.g. "Fenrir_USEast", "Puck_UK")
+    let voiceName = voice;
+    let textToSpeak = text;
+    
+    // Extract base voice name (e.g. "Puck" from "Puck_UK")
+    const [baseVoice] = voice.split('_');
+    
+    if (baseVoice && ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].includes(baseVoice)) {
+        voiceName = baseVoice as PilotVoiceName | AtcVoiceName;
+    }
+
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-preview-tts',
-            contents: { parts: [{ text }] },
+            contents: { parts: [{ text: textToSpeak }] },
             config: {
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
                     voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: voice },
+                        prebuiltVoiceConfig: { voiceName: voiceName },
                     },
                 },
             },
@@ -242,7 +265,9 @@ export async function generateSpeech(text: string, voice: PilotVoiceName | AtcVo
 
         const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (base64Audio) {
-            return decode(base64Audio);
+            const audioBytes = decode(base64Audio);
+            speechCache.set(cacheKey, audioBytes);
+            return audioBytes;
         }
         return null;
     } catch (error) {
@@ -260,6 +285,9 @@ export async function connectToLive(
     diversityMode: boolean = false
 ): Promise<any> {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    
+    // Store latest accumulated text to send on turn completion if needed
+    let lastAccumulatedText = "";
     
     const aviationContext = `
       You are an expert Aviation Transcriber with advanced predictive text capabilities.
@@ -289,36 +317,37 @@ export async function connectToLive(
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
             systemInstruction: `${aviationContext}\nLanguage: ${SUPPORTED_LANGUAGES[languageCode]}`,
+            responseModalities: [Modality.AUDIO],
+            inputAudioTranscription: {},
         },
         callbacks: {
             onopen: () => {
                 console.log("Live session connected");
             },
             onmessage: (message: LiveServerMessage) => {
-                if (message.serverContent?.modelTurn?.parts?.[0]?.text) {
-                     // Handle text if model generates it (rare in this config but possible)
-                }
-                
-                if (message.serverContent?.turnComplete) {
-                   // Turn complete. Use the accumulated buffer as final.
-                   // Note: In a real streaming app, we might rely on the inputAudioTranscription final flag,
-                   // but here we trigger 'final' logic when the turn is done.
-                }
-                
                 // Check for transcriptions
                 const transcription = message.serverContent?.inputAudioTranscription;
                 if (transcription) {
                     const text = transcription.text;
-                    // Note: The API doesn't give a strict 'isFinal' flag for every packet, 
-                    // but we can treat updates as interim until turnComplete or a pause logic in App.tsx.
-                    // However, usually we just get a stream of text.
-                    // We pass it as interim. App.tsx handles finalization via 'turnComplete' logic or manual stop.
                     if (text) {
+                        lastAccumulatedText = text;
                         onInterim(text, 0.9); // Confidence placeholder
                         if (transcription.isFinal) {
                             onFinal(text, 0.9);
+                            lastAccumulatedText = ""; // Reset after final
                         }
                     }
+                }
+                
+                // Handle Turn Complete signal for Auto-Detect
+                if (message.serverContent?.turnComplete) {
+                     // If we have text that hasn't been finalized yet, treat it as final now.
+                     // This ensures that when the user stops speaking (silence detected), we process the read-back.
+                     if (lastAccumulatedText.trim().length > 0) {
+                         console.log("Turn complete detected. Finalizing text:", lastAccumulatedText);
+                         onFinal(lastAccumulatedText, 0.9);
+                         lastAccumulatedText = ""; 
+                     }
                 }
             },
             onerror: (error: any) => {

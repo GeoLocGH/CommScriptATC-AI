@@ -1,4 +1,3 @@
-
 // Fix: Remove LiveSession from import as it is not an exported member.
 // FIX: Import Blob as GeminiBlob for use in media streaming.
 import { GoogleGenAI, Blob as GeminiBlob } from '@google/genai';
@@ -140,6 +139,7 @@ const App: React.FC = () => {
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const finalizedTranscriptRef = useRef('');
+  const interimTranscriptRef = useRef(''); // Track interim text in ref for immediate access
   const lastConfidenceRef = useRef<number | undefined>(undefined);
   const conversationLogRef = useRef<ConversationEntry[]>([]);
   const recordingContextRef = useRef<AudioContext | null>(null);
@@ -341,14 +341,6 @@ const App: React.FC = () => {
                   }
               }
 
-              // Apply playback speed if it's ATC instruction (handled via caller currently, but we can set default)
-              // source.playbackRate.value = ... (Caller should handle if needed, or we pass as arg)
-              
-              // Actually, for training mode ATC instruction, we use `playbackSpeed`. 
-              // We can set it here if we pass it, but `playbackSpeed` is state. 
-              // Let's assume `isAtc` means "Apply radio effect", not strictly "Is ATC Instruction".
-              // Playback rate is specific to the instruction. 
-              
               source.start();
               source.onended = () => {
                   playbackContext.close();
@@ -460,7 +452,12 @@ const App: React.FC = () => {
   }, [callsign, language, voice, diversityMode, playAudio]);
 
   const processAndStop = useCallback(async () => {
-    const transcriptionToProcess = finalizedTranscriptRef.current.trim();
+    // If we have finalized text, use it.
+    // If not, but we have interim text (user hit stop mid-sentence), use that.
+    let transcriptionToProcess = finalizedTranscriptRef.current.trim();
+    if (!transcriptionToProcess && interimTranscriptRef.current.trim()) {
+        transcriptionToProcess = interimTranscriptRef.current.trim();
+    }
 
     if (sessionPromiseRef.current) {
       try {
@@ -479,6 +476,8 @@ const App: React.FC = () => {
     }
 
     setInterimTranscription('');
+    finalizedTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
     setMicVolume(0);
 
     if (transcriptionToProcess) {
@@ -514,6 +513,7 @@ const App: React.FC = () => {
       
       setInterimTranscription('');
       finalizedTranscriptRef.current = '';
+      interimTranscriptRef.current = '';
       setMicVolume(0);
 
       if (status !== AppStatus.IDLE) {
@@ -539,6 +539,7 @@ const App: React.FC = () => {
     setErrorMessage(null);
     
     finalizedTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
     
     if (!isTrainingMode) {
       setRecordedAudioUrl(null);
@@ -561,7 +562,8 @@ const App: React.FC = () => {
 
       const onInterimTranscription = (accumulatedText: string, confidence?: number) => {
         setInterimTranscription(accumulatedText);
-        finalizedTranscriptRef.current = accumulatedText;
+        // Track as potential final if stop is pressed
+        interimTranscriptRef.current = accumulatedText;
         lastConfidenceRef.current = confidence;
       };
 
@@ -752,6 +754,7 @@ const App: React.FC = () => {
     if (status !== AppStatus.LISTENING) return;
     setInterimTranscription('');
     finalizedTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
   }, [status]);
 
   const handleNewSession = useCallback(() => {
@@ -1001,7 +1004,7 @@ const App: React.FC = () => {
        {showPhoneticGuide && <PhoneticAlphabetGuide onClose={() => setShowPhoneticGuide(false)} />}
       <div className="w-full max-w-3xl mx-auto flex flex-col space-y-6">
         <header className="text-center relative border-b border-gray-700/50 pb-6">
-          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">CommScript ATC</h1>
+          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">Live Comm TranScript ATC</h1>
           <p className="text-gray-400 mt-2">AI-Powered Radio Communication Assistant</p>
           <div className="absolute top-0 right-0 flex space-x-2">
             <button

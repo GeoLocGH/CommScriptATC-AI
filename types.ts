@@ -57,11 +57,18 @@ export const AVAILABLE_PILOT_VOICES = {
 export type PilotVoiceName = keyof typeof AVAILABLE_PILOT_VOICES;
 
 export const AVAILABLE_ATC_VOICES = {
-  'Fenrir': 'Authoritative Male (US)',
-  'Puck': 'Standard Male (US)',
-  'Kore': 'Standard Female (US)',
-  'Zephyr': 'Calm Male (US)',
-  'Charon': 'Deep Male (US)',
+  'Fenrir': 'Authoritative Male (US Standard)',
+  'Fenrir_USEast': 'Authoritative Male (US East Coast)',
+  'Puck': 'Standard Male (US Standard)',
+  'Puck_UK': 'Standard Male (UK)',
+  'Puck_Latin': 'Standard Male (Latin America)',
+  'Kore': 'Standard Female (US Standard)',
+  'Kore_UK': 'Standard Female (UK)',
+  'Kore_Aus': 'Standard Female (Australia)',
+  'Zephyr': 'Calm Male (US Standard)',
+  'Zephyr_Africa': 'Calm Male (Africa)',
+  'Charon': 'Deep Male (US Standard)',
+  'Charon_Asia': 'Deep Male (Asia)',
 } as const;
 
 export type AtcVoiceName = keyof typeof AVAILABLE_ATC_VOICES;

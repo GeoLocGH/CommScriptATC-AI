@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { AppStatus, TrainingScenario } from '../types';
 import MicrophoneIcon from './icons/MicrophoneIcon';

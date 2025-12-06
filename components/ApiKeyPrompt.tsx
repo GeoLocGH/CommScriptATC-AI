@@ -6,7 +6,7 @@ import SpinnerIcon from './icons/SpinnerIcon';
 const ApiKeyPrompt: React.FC<{ onSelectKey: () => void, isVerifying?: boolean }> = ({ onSelectKey, isVerifying = false }) => (
     <div className="w-full max-w-3xl mx-auto flex flex-col items-center justify-center text-center p-8 bg-gray-800/50 rounded-lg border border-gray-700 shadow-lg">
         <header className="text-center mb-6">
-          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">CommScript ATC</h1>
+          <h1 className="text-4xl md:text-5xl font-bold text-cyan-400">Live Comm TranScript ATC</h1>
           <p className="text-gray-400 mt-2">AI-Powered Radio Communication Assistant</p>
         </header>
         <div className="w-full bg-gray-800 p-6 rounded-lg border border-yellow-500/50">

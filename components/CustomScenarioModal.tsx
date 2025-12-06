@@ -4,6 +4,9 @@
 
 
 
+
+
+
 import React, { useState, useMemo } from 'react';
 import { TrainingScenario } from '../types';
 import TrashIcon from './icons/TrashIcon';
@@ -104,7 +107,7 @@ const CustomScenarioModal: React.FC<CustomScenarioModalProps> = ({ scenarios, on
     const customScenarios = scenarios.filter(s => s.isCustom);
     const dataStr = JSON.stringify(customScenarios.map(({ id, isCustom, ...rest }) => rest), null, 2);
     const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
-    const exportFileDefaultName = 'commscript-atc-custom-scenarios.json';
+    const exportFileDefaultName = 'live-comm-transcript-atc-custom-scenarios.json';
     const linkElement = document.createElement('a');
     linkElement.setAttribute('href', dataUri);
     linkElement.setAttribute('download', exportFileDefaultName);
